@@ -66,7 +66,7 @@ let usage =
 let calls =
     attributed
     | join kind=leftouter usage on CorrelationId
-    | extend cachedInput = coalesce(usageCached, 0L)
+    | extend cachedInput = coalesce(usageCached, long(0))
     // billable (non-cached) input = total prompt tokens minus the cached subset
     | extend billableInput = promptTokens - cachedInput
     | project TimeGenerated, CorrelationId, callerOid, model, deployment,

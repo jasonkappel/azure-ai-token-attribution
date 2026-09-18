@@ -109,7 +109,7 @@ AzureDiagnostics
 | extend model = tostring(p.modelName), deployment = tostring(p.modelDeploymentName),
          promptTokens = tolong(p.promptTokens), completionTokens = tolong(p.completionTokens)
 | join kind=leftouter usage on CorrelationId
-| extend cachedInput = coalesce(usageCached, 0L)
+| extend cachedInput = coalesce(usageCached, long(0))
 | summarize calls = count(), promptTokens = sum(promptTokens),
             completionTokens = sum(completionTokens), cachedInput = sum(cachedInput)
           by oid, model, deployment
