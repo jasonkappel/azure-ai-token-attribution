@@ -54,12 +54,27 @@ var record = new Dictionary<string, object?>
     ["SignedInUserOid"] = "<USER_OID_IF_KNOWN>",   // cross-check only
     ["SessionId"] = "<BUSINESS_TRANSACTION_ID>",
     // cross-check counts (authoritative counts live in AzureDiagnostics):
+    //   InputTokenCount INCLUDES cached tokens -> billable input = input - cached (never add cached on top).
+    //   reasoning tokens are a SUBSET of output -> already billed as output; never a separate line.
     ["xcheck_prompt_tokens"] = completion.Usage.InputTokenCount,
     ["xcheck_completion_tokens"] = completion.Usage.OutputTokenCount,
-    // cached / reasoning are model-conditional - read defensively (property path varies by SDK):
+    // cached / reasoning are model-conditional - read defensively (property path varies by SDK).
+    // Azure OpenAI cache WRITES are billed on GPT-5.6+ (cache_write_tokens); older models have no
+    // cache-write charge and it defaults to 0 (backward-safe). Property name varies by SDK version.
     ["xcheck_cached_tokens"] = completion.Usage.InputTokenDetails?.CachedTokenCount ?? 0,
     ["xcheck_reasoning_tokens"] = completion.Usage.OutputTokenDetails?.ReasoningTokenCount ?? 0,
+    // verbatim usage object, so a new meter never forces a re-capture:
+    ["rawUsage"] = System.Text.Json.JsonSerializer.Serialize(completion.Usage),
 };
+
+// 3b. Integrity gates (fail LOUD, never silently mis-bill): cached is a subset of prompt;
+//     reasoning is a subset of completion. A violation means the meter shape changed.
+long cachedX = completion.Usage.InputTokenDetails?.CachedTokenCount ?? 0;
+long reasonX = completion.Usage.OutputTokenDetails?.ReasoningTokenCount ?? 0;
+if (cachedX > completion.Usage.InputTokenCount)
+    throw new InvalidOperationException("cached_tokens > prompt_tokens - meter shape changed");
+if (reasonX > completion.Usage.OutputTokenCount)
+    throw new InvalidOperationException("reasoning_tokens > completion_tokens - would double-count");
 
 // 4. Send to the Log Analytics custom table via the Logs Ingestion API + DCR (see 07-*.bicep).
 var ingest = new LogsIngestionClient(

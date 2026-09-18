@@ -1,8 +1,26 @@
 # Effective-dated rate card. ILLUSTRATIVE public-list placeholders - REPLACE with real rates.
 # Never paste negotiated / contract prices into a repo. Keep the authoritative card in a governed store.
-# Units: USD per 1,000,000 tokens. cached_input applies to the cached SUBSET of input tokens.
-# cache_write and reasoning are model-conditional: add columns only when the invoice shows a matching meter.
+# Units: USD per 1,000,000 tokens.
+#
+# Column meaning (two token-cost algebras - see docs/01-how-it-works.md):
+#   input_per_1m         Uncached input. Azure OpenAI: billable input = promptTokens - cachedTokens.
+#                        Claude: input_tokens is ALREADY uncached (exclusive of cache meters).
+#   cached_input_per_1m  Azure OpenAI ONLY. Discounted rate for the cached SUBSET of prompt tokens
+#                        (automatic prompt caching, read). On GPT-5.6+ models Azure OpenAI ALSO bills
+#                        cache WRITES (prompt_tokens_details.cache_write_tokens) - add an
+#                        aoai_cache_write_per_1m column and a rate for those models when you support them.
+#                        Leave blank for Claude rows.
+#   output_per_1m        Output/completion. INCLUDES reasoning/thinking tokens - they are a subset of
+#                        output and are NEVER priced as a separate line.
+#   cache_write_5m_per_1m  Claude ONLY. cache_creation.ephemeral_5m_input_tokens (~1.25x input). Blank for AOAI.
+#   cache_write_1h_per_1m  Claude ONLY. cache_creation.ephemeral_1h_input_tokens (~2x input). A coding agent
+#                          (Claude Code) is typically the 1h customer - do NOT flatten both write tiers to one rate.
+#   cache_read_per_1m      Claude ONLY. cache_read_input_tokens (~0.1x input; some models 0.025x). Blank for AOAI.
+#
+# cache_write_* / cache_read apply only where the provider emits a matching meter; leave blank otherwise.
 # valid_to empty = currently in effect. Overlapping [valid_from, valid_to) per (model, deployment_type, region) is an error.
-model,deployment_type,region,currency,input_per_1m,cached_input_per_1m,output_per_1m,valid_from,valid_to,source
-gpt-4.1-mini,GlobalStandard,global,USD,0.40,0.10,1.60,2026-01-01,,list-price-PLACEHOLDER
-gpt-5.6-sol,GlobalStandard,global,USD,1.25,0.125,10.00,2026-07-09,,list-price-PLACEHOLDER
+model,deployment_type,region,currency,input_per_1m,cached_input_per_1m,output_per_1m,cache_write_5m_per_1m,cache_write_1h_per_1m,cache_read_per_1m,valid_from,valid_to,source
+gpt-4.1-mini,GlobalStandard,global,USD,0.40,0.10,1.60,,,,2026-01-01,,list-price-PLACEHOLDER
+gpt-5.6-sol,GlobalStandard,global,USD,1.25,0.125,10.00,,,,2026-07-09,,list-price-PLACEHOLDER
+claude-haiku-4-5,Foundry,global,USD,1.00,,5.00,1.25,2.00,0.10,2026-01-01,,list-price-PLACEHOLDER
+claude-opus-5,Foundry,global,USD,5.00,,25.00,6.25,10.00,0.50,2026-01-01,,list-price-PLACEHOLDER

@@ -63,7 +63,10 @@ let rateCard = datatable(model:string, inputPerM:real, outputPerM:real)
 //     tokens (not attributable per user here) plus streaming/estimation error. Report it as a
 //     named residual owned by the platform team; allocate by token share only as a stated policy.
 //     Foundry cache metrics (cacheReadInputTokens / ephemeral 5m/1h) reconcile the cache TOTAL,
-//     not the person.
+//     not the person. Cache WRITE has two tiers (ephemeral_5m ~1.25x input, ephemeral_1h ~2x input) -
+//     price them separately. thinking_tokens are a SUBSET of output (already in CompletionTokens) -
+//     shown for transparency, never added to cost. Full per-call meters (write 5m/1h, read, thinking)
+//     are available only from the app-side / non-streaming capture (08-sample-agent), not this gateway log.
 // =============================================================================
 
 // Ops-only (NOT accounting): App Insights llm-emit-token-metric, bounded dimensions, capped at 100 values.

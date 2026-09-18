@@ -98,10 +98,11 @@ Full walkthrough: `docs/03-setup-claude-gateway.md`.
 ## The portal
 
 `portal/index.html` is a single self-contained page with three views: Azure OpenAI (no
-gateway), Claude (via gateway), and a combined total. It is live-only. It reads
-`portal/data.json` and shows "Not configured" until you generate it, and it ships with no
-sample data. Fill `config.sample.json` (save as `config.json`), run `query-helper.ps1`, and
-reload. Details in `docs/04-portal.md`.
+gateway), Claude (via gateway), and a combined total. Each view adds a "token meters by model"
+table (input / output / cache-write / cache-read / thinking) and a persistent honest-framing
+banner. It is live-only. It reads `portal/data.json` and shows "Not configured" until you
+generate it, and it ships with no sample data. Fill `config.sample.json` (save as
+`config.json`), run `query-helper.ps1`, and reload. Details in `docs/04-portal.md`.
 
 ## The honest caveats
 
@@ -114,7 +115,16 @@ finance.
   enrichment join or from Pattern B.
 - Per-user cache is total-only on streaming. Pattern B captures prompt and completion tokens
   per user, not cache. Claude Code streams, and an outbound policy cannot reliably read a
-  streamed body, so cache reconciles at the resource total.
+  streamed body, so cache reconciles at the resource total. The full per-call meters — cache
+  write (5m/1h tiers), cache read, and thinking — come from the app-side / non-streaming capture
+  (`08-sample-agent.ps1`), not the streaming gateway path.
+- Two meter algebras; thinking is never a separate charge. Azure OpenAI `prompt_tokens` includes
+  the cached subset (billable input = prompt − cached; cache reads are discounted, and cache
+  *writes* are billed only on GPT-5.6+ via `cache_write_tokens`). Claude `input_tokens` is already
+  uncached, so total input = input + cache-write + cache-read (add, never subtract). Cache-write is
+  a premium (5m ≈ 1.25×, 1h ≈ 2×) and cache-read a discount (~0.1×). Thinking / reasoning tokens
+  are a subset of output — shown for transparency, never added to cost and never subtracted from
+  it. See `docs/01-how-it-works.md`.
 - Dollars are a list-price estimate. Both patterns price with a rate card and reconcile to
   Cost Management. Keep the variance as a named residual. Never smear it across individuals.
 - Enforcement needs a gateway on a non-bypassable path. Pattern A does not enforce anything.

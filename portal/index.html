@@ -62,13 +62,14 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
 </div>
 
 <div id="dash" class="hide">
+  <div class="note" id="qfail" style="background:#fdecea;border-color:#f5c2bd;color:#8a1c13;display:none"></div>
   <div class="note" id="caveat"></div>
 
   <!-- Combined total -->
   <section class="combined">
     <div class="sechead"><span class="dot" style="background:var(--combined)"></span><h2>Combined total</h2></div>
     <div class="grid">
-      <div class="kpi"><div class="n" id="c-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="c-cost">—</div><div class="l" id="c-costlab">Est. cost (list-price)</div></div>
       <div class="kpi"><div class="n" id="c-tokens">—</div><div class="l">Total tokens</div></div>
       <div class="kpi"><div class="n" id="c-calls">—</div><div class="l">Attributed calls</div></div>
       <div class="kpi"><div class="n" id="c-principals">—</div><div class="l">Distinct principals</div></div>
@@ -79,7 +80,7 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
   <section>
     <div class="sechead"><span class="dot" style="background:var(--aoai)"></span><h2>Azure OpenAI — no gateway</h2></div>
     <div class="grid">
-      <div class="kpi"><div class="n" id="a-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="a-cost">—</div><div class="l" id="a-costlab">Est. cost (list-price)</div></div>
       <div class="kpi"><div class="n" id="a-tokens">—</div><div class="l">Total tokens</div></div>
       <div class="kpi"><div class="n" id="a-calls">—</div><div class="l">Attributed calls</div></div>
       <div class="kpi"><div class="n" id="a-principals">—</div><div class="l">Distinct principals</div></div>
@@ -90,13 +91,15 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
         <th class="num">Calls</th><th class="num">Prompt</th><th class="num">Completion</th>
         <th class="num">Cached</th><th class="num">Est. cost</th></tr></thead>
         <tbody id="a-rows"></tbody></table></div>
+    <div class="card"><h3>Token meters by model</h3><div id="a-meters"></div>
+      <div class="mono" style="margin-top:10px">Input is billable (uncached) input = prompt &minus; cached. This platform-log path captures the cached (read) subset; cache-write (billed on GPT-5.6+ models) and per-user reasoning exist but are not on this path, so they show &ldquo;&mdash;&rdquo;. Reasoning tokens are inside completion and are not a separate charge.</div></div>
   </section>
 
   <!-- Claude (via gateway) -->
   <section>
     <div class="sechead"><span class="dot" style="background:var(--claude)"></span><h2>Claude — via gateway</h2></div>
     <div class="grid">
-      <div class="kpi"><div class="n" id="g-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="g-cost">—</div><div class="l" id="g-costlab">Est. cost (list-price)</div></div>
       <div class="kpi"><div class="n" id="g-tokens">—</div><div class="l">Prompt+completion tokens</div></div>
       <div class="kpi"><div class="n" id="g-calls">—</div><div class="l">Attributed calls</div></div>
       <div class="kpi"><div class="n" id="g-principals">—</div><div class="l">Distinct principals</div></div>
@@ -108,6 +111,8 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
         <th class="num">Est. cost</th></tr></thead>
         <tbody id="g-rows"></tbody></table>
       <div class="mono" style="margin-top:10px">Per-user cache tokens are not captured at the gateway on streaming; cache reconciles at the resource total.</div></div>
+    <div class="card"><h3>Token meters by model</h3><div id="g-meters"></div>
+      <div class="mono" style="margin-top:10px">Claude input is already uncached; total input = input + cache-write + cache-read. Cache write (5m/1h tiers) and cache read populate only when the Claude source is the app-side / non-streaming capture. On the streaming gateway path they show <b>&mdash;</b> (meter exists but is not captured here) and cache reconciles at the resource total &mdash; this is expected, not a defect. Thinking is a subset of output, shown for transparency, never added to cost. &ldquo;&mdash;&rdquo; means the meter exists but was not captured on this query path.</div></div>
   </section>
 
   <div class="foot" id="foot"></div>
@@ -120,13 +125,24 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
     {
       "generatedAt":    "<ISO 8601 UTC>",
       "timeRangeHours": <number>,
-      "aoai":   { "rows": [ { oid, model, deployment, calls, promptTokens,
-                             completionTokens, cachedInput, estCostUsd } ] },
-      "claude": { "rows": [ { oid, model, calls, promptTokens,
-                             completionTokens, estCostUsd } ] }
+      "aoai":   { "queryOk": <bool>, "rows": [ { oid, model, deployment, calls, promptTokens,
+                             completionTokens, cachedInput, estCostUsd, costBasis } ] },
+      "claude": { "queryOk": <bool>, "rows": [ { oid, model, calls, promptTokens,
+                             completionTokens, estCostUsd, costBasis,
+                             // OPTIONAL full-meter fields - present only when the Claude source is the
+                             // app-side / non-streaming capture (08-sample-agent) rather than the
+                             // streaming gateway log. On the streaming gateway path these are absent.
+                             cacheWrite5m?, cacheWrite1h?, cacheRead?, thinking? } ] }
     }
+  queryOk=false means the KQL query FAILED (not merely empty) - the portal shows a failure banner
+  instead of treating it as zero spend. estCostUsd is a list-price estimate (null when the model has
+  no rate row -> rendered as an em-dash, never a false $0). costBasis is "full", "p+c-only" (streaming
+  Claude: cache omitted), or "unpriced"; the cost KPI label reflects it.
   estCostUsd is a list-price estimate the helper already computed from the rate card;
   the portal never prices anything itself, it only sums and displays.
+  Token-meter semantics (see docs/01-how-it-works.md): AOAI promptTokens INCLUDES cachedInput
+  (billable input = prompt - cached); Claude promptTokens is already uncached. thinking/reasoning
+  tokens are a SUBSET of completion - shown for transparency, never added to cost.
 */
 
 // --- Display formatters. Everything nullable renders as an em-dash rather than "NaN". ---
@@ -147,6 +163,18 @@ function distinct(rows){ return new Set(rows.map(r=>r.oid)).size; }
 // Sum one numeric field across rows, coercing safely (missing/undefined -> 0).
 function sum(rows, k){ return rows.reduce((s,r)=>s+(Number(r[k])||0),0); }
 
+// A short qualifier appended to a cost KPI label so a headline dollar never hides that it is
+// incomplete: "P+C only" when cache/thinking were not captured (streaming Claude), and a count
+// of unpriced rows (model missing from the rate card, contributes $0 to the sum).
+function costNote(rows){
+  const unpriced = rows.filter(r=>r.estCostUsd==null).length;
+  const pcOnly = rows.some(r=>r.costBasis==="p+c-only");
+  const parts = [];
+  if(pcOnly) parts.push("P+C only, excl. cache");
+  if(unpriced>0) parts.push(unpriced+" unpriced");
+  return parts.length ? " · "+parts.join(" · ") : "";
+}
+
 // Render a horizontal "estimated cost by model" bar chart into `el`.
 // Rows are grouped by model, summed, and scaled to the largest bar so the widest
 // model fills the track. The tiny max floor (0.0000001) avoids divide-by-zero when
@@ -162,6 +190,48 @@ function bars(el, rows, color){
      <div class="barval">${usd(v)}</div></div>`).join("") || '<div class="mono">No rows.</div>';
 }
 
+// Render a per-model TOKEN METER table. `kind` is "aoai" or "claude" and controls which
+// meter columns are meaningful. Cells render "—" for a meter the pattern does not carry, so
+// the table never implies a captured 0 where the value is simply unavailable (e.g. per-user
+// Claude cache on streaming). Thinking/reasoning is shown for transparency; it is a subset of
+// output and is NOT added to cost anywhere.
+function meterTable(rows, kind){
+  const m = {};
+  rows.forEach(r=>{
+    const x = m[r.model] || (m[r.model] = {calls:0,inp:0,out:0,cw:0,cr:0,think:0,cwSeen:false,crSeen:false,thSeen:false,cost:0,unpriced:false});
+    const prompt = Number(r.promptTokens)||0, comp = Number(r.completionTokens)||0;
+    const cached = Number(r.cachedInput)||0;
+    x.calls += Number(r.calls)||0;
+    x.inp   += (kind==="aoai") ? Math.max(prompt-cached,0) : prompt;   // AOAI: subtract cached; Claude: already uncached
+    x.out   += comp;
+    if(r.estCostUsd==null) x.unpriced = true; else x.cost += Number(r.estCostUsd)||0;
+    if(kind==="aoai"){ x.cr += cached; x.crSeen = true; }              // AOAI cached (read) subset; cache-write (GPT-5.6+) not on this path
+    else {
+      if(r.cacheWrite5m!=null||r.cacheWrite1h!=null){ x.cw += (Number(r.cacheWrite5m)||0)+(Number(r.cacheWrite1h)||0); x.cwSeen=true; }
+      if(r.cacheRead!=null){ x.cr += Number(r.cacheRead)||0; x.crSeen=true; }
+      if(r.thinking!=null){ x.think += Number(r.thinking)||0; x.thSeen=true; }
+    }
+  });
+  const dashCell = `<td class="num mono">—</td>`;      // meter exists but was not captured on this query path
+  const mcell = (which, seen, val) => {
+    if(kind==="aoai"){
+      // The platform-log portal path captures the cached (read) subset only. Cache-write (billed on
+      // GPT-5.6+) and per-user reasoning exist but are not on this path -> "—", not a captured zero.
+      if(which==="cw" || which==="think") return dashCell;
+      return `<td class="num">${fmt(val)}</td>`;       // cache-read = the automatic cached subset
+    }
+    return seen ? `<td class="num">${fmt(val)}</td>` : dashCell;  // Claude: — until app-side capture is wired
+  };
+  const body = Object.entries(m).map(([model,x])=>
+    `<tr><td><span class="pill" style="background:${COLORS[kind]}22;color:#33415a">${model}</span></td>
+     <td class="num">${fmt(x.calls)}</td><td class="num">${fmt(x.inp)}</td><td class="num">${fmt(x.out)}</td>
+     ${mcell("cw",x.cwSeen,x.cw)}${mcell("cr",x.crSeen,x.cr)}${mcell("think",x.thSeen,x.think)}
+     <td class="num">${x.unpriced ? '<span class="mono">—</span>' : usd(x.cost)}</td></tr>`).join("");
+  return `<table><thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Input</th>
+     <th class="num">Output</th><th class="num">Cache write</th><th class="num">Cache read</th>
+     <th class="num">Thinking</th><th class="num">Est. cost</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
 // Fill every KPI, chart, and table from the data object. Called only when data is non-empty.
 // oids are truncated to 13 chars in the UI; the portal shows the raw id here, so in a governed
 // deployment pseudonymize upstream (in query-helper / the workspace) rather than in the browser.
@@ -174,10 +244,23 @@ function render(data){
   const aRows = (data.aoai && data.aoai.rows) || [];
   const gRows = (data.claude && data.claude.rows) || [];
 
+  // Distinguish a FAILED query from an empty result: a failure must never read as zero spend.
+  const failed = [];
+  if(data.aoai   && data.aoai.queryOk   === false) failed.push("Azure OpenAI (Pattern A)");
+  if(data.claude && data.claude.queryOk === false) failed.push("Claude gateway (Pattern B)");
+  const qf = document.getElementById("qfail");
+  if(failed.length){
+    qf.style.display = "block";
+    qf.innerHTML = "<b>Query failed for: "+failed.join(", ")+".</b> These numbers are INCOMPLETE — a "+
+      "failed query returns no rows, which is not the same as zero spend. Check workspace access, the "+
+      "table name, and query-helper.ps1 output before trusting any total.";
+  } else { qf.style.display = "none"; }
+
   // --- Azure OpenAI (no gateway): tokens = prompt + completion; cost is pre-priced. ---
   const aTokens = sum(aRows,"promptTokens")+sum(aRows,"completionTokens");
   const aCost = sum(aRows,"estCostUsd"), aCalls = sum(aRows,"calls");
   document.getElementById("a-cost").textContent = usd(aCost);
+  document.getElementById("a-costlab").textContent = "Est. cost (list-price)"+costNote(aRows);
   document.getElementById("a-tokens").textContent = fmt(aTokens);
   document.getElementById("a-calls").textContent = fmt(aCalls);
   document.getElementById("a-principals").textContent = fmt(distinct(aRows));
@@ -189,11 +272,13 @@ function render(data){
      <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
      <td class="num">${fmt(r.completionTokens)}</td><td class="num">${fmt(r.cachedInput)}</td>
      <td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
+  document.getElementById("a-meters").innerHTML = meterTable(aRows, "aoai");
 
   // --- Claude (via gateway): prompt + completion only; per-user cache is not captured. ---
   const gTokens = sum(gRows,"promptTokens")+sum(gRows,"completionTokens");
   const gCost = sum(gRows,"estCostUsd"), gCalls = sum(gRows,"calls");
   document.getElementById("g-cost").textContent = usd(gCost);
+  document.getElementById("g-costlab").textContent = "Est. cost (list-price)"+costNote(gRows);
   document.getElementById("g-tokens").textContent = fmt(gTokens);
   document.getElementById("g-calls").textContent = fmt(gCalls);
   document.getElementById("g-principals").textContent = fmt(distinct(gRows));
@@ -203,19 +288,26 @@ function render(data){
      <td><span class="pill" style="background:${COLORS.claude}22;color:#33415a">${r.model||""}</span></td>
      <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
      <td class="num">${fmt(r.completionTokens)}</td><td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
+  document.getElementById("g-meters").innerHTML = meterTable(gRows, "claude");
 
   // --- Combined total: costs and tokens simply add; principals are a UNION (the same
   //     person calling both patterns must count once, so we dedupe oids across both sets). ---
   const allOids = new Set([...aRows.map(r=>r.oid), ...gRows.map(r=>r.oid)]);
   document.getElementById("c-cost").textContent = usd(aCost+gCost);
+  document.getElementById("c-costlab").textContent = "Est. cost (list-price)"+costNote([...aRows,...gRows]);
   document.getElementById("c-tokens").textContent = fmt(aTokens+gTokens);
   document.getElementById("c-calls").textContent = fmt(aCalls+gCalls);
   document.getElementById("c-principals").textContent = fmt(allOids.size);
 
   document.getElementById("caveat").innerHTML =
-    "<b>Read the dollars as an estimate.</b> All costs are a list-price estimate reconciled to Cost Management, "+
-    "not the invoice. Azure OpenAI figures are per authenticated caller (a shared identity collapses to one "+
-    "principal). Claude figures are prompt+completion only; per-user cache is not captured at the gateway on streaming.";
+    "<b>How to read these numbers.</b> Token counts are real/measured. Dollars are a <b>list-price estimate</b> "+
+    "reconciled to Azure Marketplace / Cost Management, not the invoice. Azure OpenAI figures are per "+
+    "authenticated caller (a shared identity collapses to one principal); billable input = prompt &minus; cached. "+
+    "Claude figures are prompt+completion per user (input is already uncached); <b>cache-write is billed at a "+
+    "premium and cache-read at a discount</b>, and per-user cache is not captured at the gateway on streaming "+
+    "(reconcile at the resource total). <b>Thinking / reasoning tokens are already inside output</b> and are shown "+
+    "for transparency only, never added to cost. App-side enrichment (department / app / cost center) is "+
+    "app-reported - reconcile row totals to independent control totals and report coverage, not a closed invoice.";
 
   const gen = data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "";
   const hrs = data.timeRangeHours ? `${data.timeRangeHours}h window` : "";
@@ -224,10 +316,13 @@ function render(data){
 }
 
 // Load the live data and render. Missing file, non-OK response, empty payload, or a
-// file:// fetch block all fall through to the pre-rendered "Not configured" state.
+// file:// fetch block all fall through to the pre-rendered "Not configured" state. A query
+// that ran but FAILED (queryOk=false) is rendered (not treated as "Not configured") so the
+// failure banner shows instead of a misleading blank.
+function queryFailed(d){ return !!(d && ((d.aoai&&d.aoai.queryOk===false)||(d.claude&&d.claude.queryOk===false))); }
 fetch("data.json", {cache:"no-store"})            // no-store so a re-run is picked up on reload
   .then(r => r.ok ? r.json() : null)              // 404 (never generated) -> null -> stays blank
-  .then(d => { if(isEmpty(d)) return; render(d); })
+  .then(d => { if(isEmpty(d) && !queryFailed(d)) return; render(d); })
   .catch(()=>{ /* file:// fetch blocked, or bad JSON: leave the Not configured state */ });
 </script>
 </div></body></html>

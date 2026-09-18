@@ -77,8 +77,10 @@ let calls =
 //   Rates below are ILLUSTRATIVE public-list placeholders per 1,000,000 tokens (USD).
 //   Replace with a maintained, effective-dated table. Label output as a LIST-PRICE
 //   ESTIMATE - it is not the invoice. Reconcile to Cost Management (Q5).
-//   Reasoning tokens: on reasoning models, verify whether they are already inside
-//   completionTokens before pricing them again. Do not double-count.
+//   Reasoning tokens: on reasoning models they are a SUBSET of completionTokens (already billed as
+//   output). Never price them as a separate line - that double-counts. Azure OpenAI also has NO
+//   cache-WRITE charge (prompt caching is automatic/read-only) on pre-GPT-5.6 models; GPT-5.6+
+//   DOES bill cache writes (cache_write_tokens), so add a cache-write rate for those models.
 // -----------------------------------------------------------------------------
 let rateCard = datatable(model:string, inputPerM:real, cachedInputPerM:real, outputPerM:real)
 [

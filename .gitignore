@@ -24,3 +24,7 @@ node_modules/
 Thumbs.db
 .vs/
 .vscode/
+
+# Python bytecode
+__pycache__/
+*.pyc

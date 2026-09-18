@@ -65,13 +65,27 @@ enrichment = {
     "SignedInUserOid": "<USER_OID_IF_KNOWN>",  # cross-check only; platform log is authoritative
     "SessionId": "<BUSINESS_TRANSACTION_ID>",
     # cross-check tokens (authoritative counts live in AzureDiagnostics):
+    #   prompt_tokens INCLUDES cached_tokens -> billable input = prompt - cached (never add cached on top).
+    #   reasoning_tokens are a SUBSET of completion_tokens -> already billed as output; never a separate line.
     "xcheck_prompt_tokens": parsed.usage.prompt_tokens,
     "xcheck_completion_tokens": parsed.usage.completion_tokens,
     "xcheck_cached_tokens": getattr(parsed.usage.prompt_tokens_details, "cached_tokens", 0),
-    # reasoning/cache_write are model-conditional - read defensively, do not assume present:
+    # reasoning/cache_write are model-conditional - read defensively, do not assume present.
+    # Azure OpenAI cache WRITES are billed on GPT-5.6+ (prompt_tokens_details.cache_write_tokens);
+    # older models have no cache-write charge and this defaults to 0 (backward-safe).
+    "xcheck_cache_write_tokens": getattr(parsed.usage.prompt_tokens_details, "cache_write_tokens", 0),
     "xcheck_reasoning_tokens": getattr(
         getattr(parsed.usage, "completion_tokens_details", None), "reasoning_tokens", None),
+    # verbatim usage object, so a new meter never forces a re-capture:
+    "rawUsage": parsed.usage.model_dump_json() if hasattr(parsed.usage, "model_dump_json") else str(parsed.usage),
 }
+
+# --- 3b. Integrity gates (fail LOUD, do not silently mis-bill). cached is a subset of prompt;
+#        reasoning is a subset of completion. A violation means the meter shape changed. ---
+_cached = enrichment["xcheck_cached_tokens"] or 0
+_reason = enrichment["xcheck_reasoning_tokens"] or 0
+assert _cached <= parsed.usage.prompt_tokens, "cached_tokens > prompt_tokens - meter shape changed"
+assert _reason <= parsed.usage.completion_tokens, "reasoning_tokens > completion_tokens - would double-count"
 
 # --- 4. Send to a Log Analytics CUSTOM TABLE via the Logs Ingestion API + DCR.
 #        (The legacy HTTP Data Collector API retired 2026-09-14 - do not use it.)

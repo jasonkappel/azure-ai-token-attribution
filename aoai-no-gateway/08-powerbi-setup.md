@@ -68,6 +68,13 @@ List-Price Estimate (USD) =
           + DIVIDE ( Attribution[cachedTokens] * RELATED ( RateCard[cached_input_per_1m] ), 1000000 )
           + DIVIDE ( Attribution[completionTokens] * RELATED ( RateCard[output_per_1m] ), 1000000 )
     )
+// Reasoning tokens (reasoning models) are a SUBSET of completionTokens - already priced as output
+// above. Do NOT add a reasoning line; that double-counts. Azure OpenAI bills cache writes only on
+// GPT-5.6+ (cache_write_tokens) - add that rate/column for those models; older models have none.
+// For a Claude app-side capture (non-streaming), extend RateCard with cache_write_5m_per_1m
+// (~1.25x input), cache_write_1h_per_1m (~2x input), cache_read_per_1m (~0.1x input) and add those
+// three token columns to the estimate; Claude input is already uncached, so ADD the meters (never
+// subtract). thinking_tokens are a subset of output - display only, never priced separately.
 
 Allocated Cost (Tariff USD) =            // your internal tariff, if you chargeback that way (placeholder)
     [Observed Tokens] * 0                 // replace with an approved tariff table lookup

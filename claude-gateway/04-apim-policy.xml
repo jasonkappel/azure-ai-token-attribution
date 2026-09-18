@@ -109,7 +109,10 @@
     <base />
     <!-- No response-body read here. Per-user prompt/completion tokens come from the native
          ApiManagementGatewayLlmLog joined to x-caller-oid (09-attribution.kql). Streaming is safe
-         because APIM's own LLM logging is SSE-aware. Cache tokens are total-only (Foundry metrics). -->
+         because APIM's own LLM logging is SSE-aware. Cache tokens are total-only (Foundry metrics).
+         DO NOT add a body read to grab the full usage object: buffering the response defeats SSE, and a
+         streamed body is multi-frame (message_start + message_delta), not one JObject. Capture the full
+         meters (cache-write 5m/1h, cache-read, thinking) app-side / non-streaming instead (08-sample-agent). -->
   </outbound>
 
   <on-error>

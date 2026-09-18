@@ -124,14 +124,39 @@ Before wiring the real CLI, prove the gateway end to end with the sample agent:
 It mints one token and loops prompts across deployments using a single pooled `HttpClient`.
 That detail matters: a loop of `Invoke-WebRequest` calls opens a fresh socket each time and a
 burst exhausts ephemeral ports, so the batch fails partway. It records per call the caller
-oid, model, usage object, the `x-tokens-consumed` and `x-remaining-tokens` quota headers, and
-the `apim-request-id`.
+oid, model, the full usage object — input (already uncached), output, cache-write with the
+ephemeral 5m/1h tiers, cache-read, and thinking (a subset of output) — plus the raw usage JSON,
+the `x-tokens-consumed` and `x-remaining-tokens` quota headers, and the `apim-request-id`.
+Because these are non-streaming calls, the single response carries the whole usage object; a
+streamed response splits usage across `message_start` (input + cache) and `message_delta`
+(output), so a streaming client must merge the two rather than take the last usage object.
 
 ## Step 6: report
 
 Run `claude-gateway/09-attribution.kql` in the workspace. It joins the native LLM token log to
 the caller oid and gives per-user prompt and completion tokens, a list-price estimate, and the
 resource-level reconciliation. Per-user cache is not captured; that is by design on streaming.
+
+### Expected results by capture path (so you do not think the toolkit is broken)
+
+The full meters populate only on the path that actually carries them. This is expected behavior,
+not a defect:
+
+| Capture path | Input / output per user | Cache-write (5m/1h) · cache-read · thinking |
+|---|---|---|
+| Streaming gateway log (`09-attribution.kql`, the shipped default) | Yes | **Not captured** — portal shows "—"; cache reconciles at the resource total |
+| App-side / non-streaming capture (`08-sample-agent.ps1`) | Yes | Yes — full per-call meters in the response `usage` object |
+
+A cloned deployment that wires only the streaming gateway path **will** see every Claude
+cache/thinking cell as "—". That is correct. To populate them you must add an ingestion adapter
+for the app-side capture (not shipped as a portal source — the sample agent prints to the
+console, it does not write `data.json`).
+
+> **Do NOT UNION the two sources.** If you ingest the app-side capture as the Claude source, it
+> already contains prompt+completion, so concatenating it with the gateway log double-counts
+> prompt/completion while cache appears once. Pick ONE source of record per call and, if you
+> ever merge, dedupe on `apim-request-id` (replace, never union) and tag each row with a
+> `usage_source` so reconciliation can tell app-reported from gateway-metered.
 
 ## Verification gates before production
 

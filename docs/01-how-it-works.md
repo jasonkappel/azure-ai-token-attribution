@@ -50,9 +50,11 @@ Who you get depends on the token:
   because the app is the only place that knows both.
 
 The cost model has one trap worth stating plainly: cached input is a subset of input, priced
-at a discount, not an extra line. Billable input is `promptTokens` minus `cachedTokens`.
-Publish four separate measures, never one blended number: observed tokens, list-price
-estimate, allocated cost (your tariff, if any), and billed cost from Cost Management.
+at a discount, not an extra line. Billable input is `promptTokens` minus `cachedTokens`, and
+reasoning tokens (on reasoning models) are a subset of completion — already billed as output,
+never a separate line. (See "Token meters: two algebras" below for the full rule.) Publish four
+separate measures, never one blended number: observed tokens, list-price estimate, allocated
+cost (your tariff, if any), and billed cost from Cost Management.
 
 Two field behaviors here are pilot-observed, not documented by Microsoft: `callerObjectId`
 and the `CorrelationId == apim-request-id` join. Pin them and run the canary
@@ -89,6 +91,47 @@ the `x-api-key` and `Authorization` headers. Three things must be proven in a pi
 assumed: the token audience is the gateway app (a token scoped to `ai.azure.com` is rejected),
 the helper runs silently on a Conditional-Access-managed workstation, and the CLI version is
 pinned because a future build could change the header behavior.
+
+## Token meters: two algebras, one rule about thinking
+
+Once you go past prompt+completion, the `usage` object is not one shape — it is two, and using
+one cost formula for both silently mis-bills. Read this before touching the rate math.
+
+**Azure OpenAI (OpenAI shape) — inclusive.** `prompt_tokens` *includes* the cached subset
+(`prompt_tokens_details.cached_tokens`). Billable (uncached) input = `prompt − cached`; the
+cached part is priced at a discount, never added on top. On **pre-GPT-5.6 models** prompt caching
+is automatic and read-only — there is no cache-write charge. On **GPT-5.6 and later** Azure OpenAI
+*does* bill cache writes, reported in `prompt_tokens_details.cache_write_tokens` (defaults to 0 on
+older models, so reading it is backward-safe); price those with a dedicated AOAI cache-write rate.
+`reasoning_tokens` are a subset of `completion_tokens`.
+
+**Claude (Anthropic Messages, incl. via Foundry/APIM) — exclusive/additive.** `input_tokens` is
+*already* uncached and is exclusive of the cache meters, so **total input = input +
+cache_creation + cache_read** (add the three; never subtract). Cache **write** has two TTL tiers
+under `cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}` — 5m ≈ 1.25× input,
+1h ≈ 2× input; a coding agent (Claude Code) is typically the 1h customer, so flattening both to
+one write rate under-counts. The two tiers **sum to** `cache_creation_input_tokens` — use the tier
+breakdown to price, but do not add it on top of the scalar total. Cache **read** ≈ 0.1× input.
+
+**The rule that holds for both:** thinking / reasoning tokens are a **subset of output** — they
+are already billed as output. Show them for transparency; **never add them, and never subtract
+them from output either** (subtracting throws away almost all of an extended-thinking call's
+cost). Enforce it as a per-row gate: `thinking ≤ output`, and for AOAI `cached ≤ prompt`. If a
+gate trips, the meter shape changed — surface it rather than trusting the number.
+
+**Streaming (SSE) splits usage across frames.** On a streamed Claude response `message_start.usage`
+carries input + cache_creation + cache_read, and the **final `message_delta.usage`** is the
+authoritative cumulative total (it carries the output count and the input/cache snapshot at stream
+end). The trap is reading an *intermediate* delta or discarding the `message_start` fields — read
+the final `message_delta` (merging in the `message_start` input/cache fields is equivalent and
+safe). Do not reconstruct this by buffering the body in an APIM outbound policy — buffering defeats
+streaming and the body is multi-frame, not one JSON object.
+The full per-call meters therefore come from the app-side / non-streaming capture
+(`08-sample-agent`), while the streaming gateway path stays prompt+completion with cache
+reconciled at the resource total. Treat any app-captured usage as **app-reported**: dedupe on a
+correlation id and reconcile row totals to independent control totals (APIM counts, Foundry /
+Cost Management), reporting a coverage percentage rather than presenting the ledger as a closed
+invoice.
 
 ## When to use which
 

@@ -13,8 +13,20 @@ fabricated.
   Pattern B.
 - Combined total: cost, tokens, calls, and distinct principals across both.
 
-Each view shows KPI cards, an estimated-cost-by-model bar chart, and a per-principal table.
-The combined total sits at the top so the headline number is the first thing you see.
+Each view shows KPI cards, an estimated-cost-by-model bar chart, a per-principal table, and a
+"token meters by model" table (input, output, cache-write, cache-read, thinking). The combined
+total sits at the top so the headline number is the first thing you see. A persistent
+honest-framing banner explains how to read the numbers: tokens are measured, dollars are a
+list-price estimate, cache-write is a premium and cache-read a discount, and thinking/reasoning
+tokens are already inside output (shown for transparency, never added to cost).
+
+The meter table renders "—" for any meter a pattern does not carry, so a blank cell never reads
+as a captured zero. Azure OpenAI shows input (= prompt − cached), output, and cache-read (the
+automatic cached subset); cache-write (billed on GPT-5.6+) and per-user reasoning are not on this
+query path, so they render "—". Claude shows input and output per user;
+its cache-write (5m/1h) and cache-read columns populate only when the Claude source is the
+app-side / non-streaming capture — on the streaming gateway path they stay "—" and cache
+reconciles at the resource total.
 
 ## What you supply
 

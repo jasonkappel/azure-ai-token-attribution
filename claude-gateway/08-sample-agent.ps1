@@ -5,10 +5,23 @@
  WHAT THIS DOES
    Mints ONE per-user Entra token, then loops a few prompts across your Claude
    deployments through the APIM gateway, recording per call: caller oid, model,
-   the Anthropic usage object (input / output / cache_creation / cache_read), the
-   gateway quota headers (x-tokens-consumed, x-remaining-tokens), and the
+   the FULL Anthropic usage object - input (already uncached), output,
+   cache_creation (with the ephemeral_5m / ephemeral_1h write tiers),
+   cache_read, and output_tokens_details.thinking_tokens (a SUBSET of output) -
+   plus the gateway quota headers (x-tokens-consumed, x-remaining-tokens) and the
    apim-request-id. It stands in for a real client so you can prove attribution
    and the per-user quota decrement before wiring up Claude Code itself.
+
+   STREAMING CAVEAT (read before you trust cache in production): this sample makes
+   NON-STREAMING calls, so the single JSON response carries the whole usage object.
+   A streamed Claude response splits usage across frames - message_start.usage has
+   input + cache_creation + cache_read, and the terminal message_delta.usage has
+   output only. If you capture "the last usage object" you ZERO cache and input; you
+   must MERGE message_start UNION message_delta. Do NOT reconstruct this by buffering
+   the response body in an APIM outbound policy (buffering defeats SSE and the body is
+   multi-frame, not one JObject). For streaming production capture usage app-side, or
+   use the SSE-aware llm-emit-token-metric policy for gateway metering (prompt+
+   completion only, no cache).
 
    Why this exists: Claude Code cannot do interactive Entra OAuth to a custom
    gateway, and on a Conditional-Access-managed workstation silent token
@@ -89,14 +102,29 @@ foreach ($model in $Deployments) {
     $usage = $null
     if ($resp.IsSuccessStatusCode) { $usage = ($bodyText | ConvertFrom-Json).usage }
 
+    # Pull the write tiers + thinking defensively (absent on some models / versions).
+    $cw = $usage.cache_creation
+    $cw5m = if ($cw) { [int]$cw.ephemeral_5m_input_tokens } else { 0 }
+    $cw1h = if ($cw) { [int]$cw.ephemeral_1h_input_tokens } else { 0 }
+    $think = if ($usage.output_tokens_details) { [int]$usage.output_tokens_details.thinking_tokens } else { 0 }
+    # Integrity gate: thinking is a SUBSET of output. If it ever exceeds output the shape changed
+    # (additive thinking) and the cost math would be wrong - surface it, do not silently trust it.
+    if ($usage -and $think -gt [int]$usage.output_tokens) {
+      Write-Warning ("thinking ({0}) > output ({1}) for {2} - meter shape changed; verify pricing." -f $think, $usage.output_tokens, $model)
+    }
+
     $results += [pscustomobject]@{
       oid            = $oid
       model          = $model
       status         = [int]$resp.StatusCode
-      input          = $usage.input_tokens
-      output         = $usage.output_tokens
-      cache_creation = $usage.cache_creation_input_tokens
-      cache_read     = $usage.cache_read_input_tokens
+      input          = $usage.input_tokens          # already uncached (exclusive of cache meters)
+      output         = $usage.output_tokens         # includes thinking tokens
+      cache_creation = $usage.cache_creation_input_tokens   # total write (= 5m + 1h)
+      cache_write_5m = $cw5m                         # ~1.25x input
+      cache_write_1h = $cw1h                         # ~2x input (coding agents live here)
+      cache_read     = $usage.cache_read_input_tokens       # ~0.1x input
+      thinking       = $think                        # SUBSET of output - display only, never add to cost
+      rawUsage       = if ($usage) { ($usage | ConvertTo-Json -Compress -Depth 6) } else { $null }  # verbatim, so a new meter never forces a re-capture
       tokensConsumed = ($consumed  -join ",")
       tokensRemaining= ($remaining -join ",")
       apimRequestId  = ($apimId    -join ",")
@@ -114,3 +142,8 @@ $results | Format-Table -AutoSize
 # In production with streaming Claude Code, cache is NOT captured at the gateway - reconcile the
 # cache total at the resource level (see 09-attribution.kql Q3). Per-user attribution in production
 # is prompt+completion from the native ApiManagementGatewayLlmLog joined to x-caller-oid.
+#
+# This script PRINTS its capture; it is not a portal source. If you build an ingestion adapter to
+# feed these full-meter rows into the portal, do NOT union them with the gateway log - both carry
+# prompt+completion, so a union double-counts. Pick ONE source of record per call; if you merge,
+# replace by apim-request-id (never union) and tag each row with usage_source = "app_reported".

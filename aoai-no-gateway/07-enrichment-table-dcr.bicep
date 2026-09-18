@@ -57,8 +57,11 @@ resource table 'Microsoft.OperationalInsights/workspaces/tables@2022-10-01' = {
         { name: 'SessionId', type: 'string' }
         { name: 'xcheck_prompt_tokens', type: 'int' }
         { name: 'xcheck_completion_tokens', type: 'int' }
-        { name: 'xcheck_cached_tokens', type: 'int' }
-        { name: 'xcheck_reasoning_tokens', type: 'int' }
+        { name: 'xcheck_cached_tokens', type: 'int' }      // AOAI cached (read) SUBSET of prompt; GPT-5.6+ also bills cache_write_tokens
+        { name: 'xcheck_reasoning_tokens', type: 'int' }   // SUBSET of completion - display only, never a separate charge
+        { name: 'rawUsage', type: 'string' }               // verbatim usage JSON, so a new meter needs no schema change
+        // For an app-side CLAUDE capture store (non-streaming), add: cache_write_5m, cache_write_1h,
+        // cache_read, thinking (all int). Claude input is already uncached; total input = input + write + read.
       ]
     }
     retentionInDays: 90
@@ -92,6 +95,7 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
           { name: 'xcheck_completion_tokens', type: 'int' }
           { name: 'xcheck_cached_tokens', type: 'int' }
           { name: 'xcheck_reasoning_tokens', type: 'int' }
+          { name: 'rawUsage', type: 'string' }
         ]
       }
     }
