@@ -136,6 +136,10 @@ Write-Host "Querying Azure OpenAI (Pattern A)..."
 $aoaiRes = Invoke-Kql $aoaiKql
 $aoaiRows = @($aoaiRes.rows | ForEach-Object {
   $price = Price-Aoai $_
+  # Wire the integrity gates into the pipeline so they are not decorative: a row whose meters
+  # violate an invariant (cached > prompt) is surfaced, not silently priced.
+  $iv = Test-UsageIntegrity -Family 'aoai' -PromptTokens (Get-Field $_ 'promptTokens') -CachedTokens (Get-Field $_ 'cachedInput')
+  if ($iv.Count) { Write-Warning ("AOAI integrity oid=$($_.oid) model=$($_.model): " + ($iv -join '; ')) }
   [pscustomobject]@{
     oid = $_.oid; model = $_.model; deployment = $_.deployment
     calls = [int]$_.calls; promptTokens = [long]$_.promptTokens
@@ -143,6 +147,7 @@ $aoaiRows = @($aoaiRes.rows | ForEach-Object {
     # null (UNPRICED) stays null so the portal renders it as an em-dash, never a false $0.
     estCostUsd = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
     costBasis  = if ($null -eq $price) { "unpriced" } else { "full" }   # AOAI cached is captured in the log
+    integrity  = if ($iv.Count) { ($iv -join '; ') } else { "ok" }
   }
 })
 
@@ -150,12 +155,17 @@ Write-Host "Querying Claude gateway (Pattern B)..."
 $claudeRes = Invoke-Kql $claudeKql
 $claudeRows = @($claudeRes.rows | ForEach-Object {
   $price = Price-Claude $_
+  $iv = Test-UsageIntegrity -Family 'claude' -OutputTokens (Get-Field $_ 'completionTokens') `
+        -ThinkingTokens (Get-Field $_ 'thinking') -CacheCreationTotal (Get-Field $_ 'cacheCreation') `
+        -CacheWrite5m (Get-Field $_ 'cacheWrite5m') -CacheWrite1h (Get-Field $_ 'cacheWrite1h')
+  if ($iv.Count) { Write-Warning ("Claude integrity oid=$($_.oid) model=$($_.model): " + ($iv -join '; ')) }
   [pscustomobject]@{
     oid = $_.oid; model = $_.model
     calls = [int]$_.calls; promptTokens = [long]$_.promptTokens
     completionTokens = [long]$_.completionTokens
     estCostUsd = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
     costBasis  = Get-ClaudeBasis $_ $price   # "full" | "p+c-only" (streaming) | "unpriced"
+    integrity  = if ($iv.Count) { ($iv -join '; ') } else { "ok" }
   }
 })
 

@@ -40,8 +40,10 @@ param(
   [int]$CallCount = 2,
   [int]$LookbackMinutes = 20,
   [int]$MaxWaitSeconds = 300,
-  [double]$ResourceTotalUsd = -1     # supply the resource-day Marketplace total to compute a residual; <0 = skip
-)
+  [double]$ResourceTotalUsd = -1,    # supply the resource-day Marketplace total to compute a residual; <0 = skip
+  [double]$ReconcileTolerance = -1,  # with -ResourceTotalUsd, GATE |residual| <= this (USD); <0 = report only
+  [string]$TokenAudience = "https://cognitiveservices.azure.com"  # classic AOAI data-plane audience (proven).
+)                                    # Current Foundry docs use https://ai.azure.com; both are accepted in transition.
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot '..\lib\AiBilling.Metering.psm1') -Force
@@ -57,6 +59,17 @@ function Assert-Near($name, $actual, $expected, $tol = 1e-9) {
 function Assert-Null($name, $actual) { if ($null -eq $actual) { Ok $name } else { Bad $name "expected NULL, got $actual" } }
 function Assert-Eq($name, $actual, $expected) { if ($actual -eq $expected) { Ok $name } else { Bad $name "expected $expected, got $actual" } }
 function Assert-True($name, $cond, $detail = "") { if ($cond) { Ok $name } else { Bad $name $detail } }
+
+# Run a KQL query from a BOM-less temp file and return the parsed rows (empty array on failure).
+function Run-Kql([string]$query, [string]$wsId) {
+  $tmp = New-TemporaryFile
+  [System.IO.File]::WriteAllText($tmp, $query, (New-Object System.Text.UTF8Encoding($false)))
+  try {
+    $j = az monitor log-analytics query --workspace $wsId --analytics-query "@$tmp" -o json 2>$null
+    if ([string]::IsNullOrWhiteSpace($j)) { return @() }
+    return @($j | ConvertFrom-Json)
+  } catch { return @() } finally { Remove-Item $tmp -Force }
+}
 
 Write-Host "`n=== AIBilling acceptance test ===" -ForegroundColor Cyan
 
@@ -78,14 +91,23 @@ Assert-Near "Claude cache-read (0.1x-ish)" (Get-ClaudeCost -Rates $rc -Model 'te
 # Scalar fallback: only cache_creation total present (no 5m/1h split) -> priced at 5m, NOT $0
 Assert-Near "Claude scalar-write fallback (not free)" (Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheCreationTotal 1000) 0.0175
 
-Write-Host "`n-- OFFLINE: thinking is billed as output, never added or subtracted --"
-$noThink   = Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheWrite5m 1000
-# thinking is not even a cost parameter, so a huge thinking value cannot change the dollar:
-$withThink = Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheWrite5m 1000
-Assert-Near "thinking not ADDED to cost" $withThink 0.0175
-Assert-Near "thinking not SUBTRACTED from cost (output billed in full)" $withThink $noThink
-# a "subtract thinking" bug would have produced (200-200)*20 = 0 output cost -> 0.0125; prove we did NOT
-Assert-True "output cost is full 200 tokens, not (output-thinking)" ($withThink -gt 0.0125) "got $withThink"
+Write-Host "`n-- OFFLINE: output is billed in full; thinking can't enter the dollar --"
+# Pin the OUTPUT contribution by differencing two calls that differ ONLY in output tokens.
+# out=200 -> 0.0175 ; out=0 -> 0.0135. Delta must be EXACTLY 200 * out_rate(20) / 1e6 = 0.004.
+# A "subtract thinking from output" bug would shrink this delta; a strict-equality assert catches it.
+$cOut200 = Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheWrite5m 1000
+$cOut0   = Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 0   -CacheWrite5m 1000
+Assert-Near "output billed in full (200 tokens contribute exactly 200*rate)" ($cOut200 - $cOut0) 0.004
+# Structural guarantee: Get-ClaudeCost exposes NO thinking parameter, so thinking can never be priced.
+# If someone later adds one, this fails and forces a decision instead of a silent double-count.
+$hasThinkingParam = (Get-Command Get-ClaudeCost).Parameters.Keys -contains 'ThinkingTokens'
+Assert-True "cost model has NO thinking parameter (thinking is unpriceable by construction)" (-not $hasThinkingParam) "a ThinkingTokens param exists"
+
+Write-Host "`n-- OFFLINE: cache-write double-count guards --"
+# scalar total AND 5m both present -> the fallback must NOT add the scalar on top of 5m (5m wins).
+Assert-Near "scalar+5m both set: no double-count (5m only)" (Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheWrite5m 1000 -CacheCreationTotal 1000) 0.0175
+# 5m AND 1h both present -> both priced at their own tiers (12.5 + 20 per token here).
+Assert-Near "5m+1h both present: each tier priced" (Get-ClaudeCost -Rates $rc -Model 'test-claude' -InputTokens 100 -OutputTokens 200 -CacheWrite5m 400 -CacheWrite1h 600) (( 100*10 + 200*20 + 400*12.5 + 600*20 ) / 1000000.0)
 
 Write-Host "`n-- OFFLINE: unpriced model => null, never `$0 --"
 Assert-Null "unknown model is UNPRICED" (Get-ClaudeCost -Rates $rc -Model 'no-such-model' -InputTokens 100 -OutputTokens 200)
@@ -103,6 +125,10 @@ $dupRows = @(
   [pscustomobject]@{ apimRequestId = 'B'; promptTokens = 20 }
 )
 Assert-Eq "dedup collapses double-logged call" (Merge-Dedup -Rows $dupRows -IdField 'apimRequestId').Count 2
+# Rows with an EMPTY idempotency key cannot be deduped blindly - keep them (a missing key is a
+# capture defect to surface, not a licence to merge unrelated calls).
+$noKey = @([pscustomobject]@{ apimRequestId = ''; promptTokens = 1 }, [pscustomobject]@{ apimRequestId = ''; promptTokens = 1 })
+Assert-Eq "dedup keeps rows with EMPTY idempotency key" (Merge-Dedup -Rows $noKey -IdField 'apimRequestId').Count 2
 $cov = Get-Coverage -Expected 8 -Captured 6
 Assert-Near "coverage 6/8 = 75%" $cov.pct 75
 $recon = Get-ReconciliationResidual -EstimateSum 90 -ResourceTotal 100
@@ -111,24 +137,33 @@ Assert-Near "reconciliation residual = 10%" $recon.residualPct 10
 
 # =====================================================================
 #  LIVE: identity -> usage -> ingestion -> priced result (Pattern A)
+#  NOTE: the platform-log fields this exercises - callerObjectId, the properties_s token
+#  counts, and event_s == 'ShoeboxCallResult' - are PILOT-OBSERVED, not documented/contracted
+#  by Microsoft. If Microsoft renames them or moves to a dedicated table, these asserts fail
+#  (loudly, by design). Pin the probe to a NON-STREAMING, NON-REASONING, no-tools deployment:
+#  on reasoning models the logged completion count can legitimately differ from the response
+#  usage (reasoning tokens), which would falsely fail the token-equality assert.
 # =====================================================================
+$liveRan = $false
 if ($Live) {
   Write-Host "`n-- LIVE: Pattern A round trip --" -ForegroundColor Cyan
   if (-not $WorkspaceId -or -not $FoundryEndpoint -or -not $Deployment) {
     Bad "live prerequisites" "-Live requires -WorkspaceId, -FoundryEndpoint and -Deployment"
   } else {
+    $liveRan = $true
     Add-Type -AssemblyName System.Net.Http
 
-    # L1. Identity: who are we, per Entra?
+    # L1. Identity: who are we, per Entra? (az id == token oid is documented; oid == callerObjectId is pilot-observed.)
     $signedInOid = (az ad signed-in-user show --query id -o tsv 2>$null)
     Assert-True "L1 identity: signed-in oid resolved" (-not [string]::IsNullOrWhiteSpace($signedInOid)) "run 'az login'"
 
-    # L2. RBAC preflight: can we even read the workspace? (Log Analytics Reader on the workspace, not just the resource.)
+    # L2. RBAC preflight: querying via --workspace needs a WORKSPACE-scoped read right (Log Analytics
+    #     Reader on the workspace), not just Reader on the AOAI resource.
     $probe = az monitor log-analytics query --workspace $WorkspaceId --analytics-query "print ping=1" -o json 2>$null
     Assert-True "L2 RBAC: workspace is queryable" ($LASTEXITCODE -eq 0 -and $probe) "grant 'Log Analytics Reader' on the workspace"
 
-    # L3. Fire CallCount known calls AS THE USER (user token -> cognitiveservices), capture usage + apim-request-id.
-    $aoaiTok = az account get-access-token --resource "https://cognitiveservices.azure.com" --query accessToken -o tsv 2>$null
+    # L3. Fire CallCount known calls AS THE USER (user token), capture usage + apim-request-id.
+    $aoaiTok = az account get-access-token --resource $TokenAudience --query accessToken -o tsv 2>$null
     $http = [System.Net.Http.HttpClient]::new(); $http.Timeout = [TimeSpan]::FromSeconds(90)
     $fired = New-Object System.Collections.Generic.List[object]
     for ($i = 0; $i -lt $CallCount; $i++) {
@@ -152,9 +187,9 @@ if ($Live) {
     $http.Dispose()
     Assert-Eq "L3 fired all probe calls" $fired.Count $CallCount
 
-    # L4. Wait for ingestion, then pull the attributed rows for our CorrelationIds.
+    # L4. Wait for ingestion, then pull the ATTRIBUTED (filtered) rows for our CorrelationIds.
     $ids = ($fired | ForEach-Object { "'" + $_.apimId + "'" }) -join ","
-    $kql = @"
+    $kqlFiltered = @"
 AzureDiagnostics
 | where TimeGenerated > ago(${LookbackMinutes}m)
 | where ResourceProvider == 'MICROSOFT.COGNITIVESERVICES'
@@ -167,15 +202,13 @@ AzureDiagnostics
 "@
     $rows = @(); $waited = 0
     while ($waited -lt $MaxWaitSeconds) {
-      $tmp = New-TemporaryFile
-      [System.IO.File]::WriteAllText($tmp, $kql, (New-Object System.Text.UTF8Encoding($false)))
-      $j = az monitor log-analytics query --workspace $WorkspaceId --analytics-query "@$tmp" -o json 2>$null
-      Remove-Item $tmp -Force
-      if ($j) { $rows = @($j | ConvertFrom-Json) }
+      $rows = @(Run-Kql $kqlFiltered $WorkspaceId)
       if ($rows.Count -ge $fired.Count) { break }
       Start-Sleep -Seconds 20; $waited += 20
       Write-Host ("    ...waiting for ingestion ({0}s, {1}/{2} rows)" -f $waited, $rows.Count, $fired.Count)
     }
+    # Fail LOUD (not silently zero) if the pilot-observed field yielded nothing.
+    Assert-True "L4 ingestion: ShoeboxCallResult rows arrived" ($rows.Count -gt 0) "0 rows after ${MaxWaitSeconds}s - ingestion lag, or the pilot-observed callerObjectId/event_s changed"
 
     # L5. Correctness: exactly one attributed row per call, right identity, log tokens == API usage.
     $deduped = Merge-Dedup -Rows $rows -IdField 'CorrelationId'
@@ -188,9 +221,54 @@ AzureDiagnostics
       if ([long]$match.promptTokens -ne [long]$f.prompt -or [long]$match.completionTokens -ne [long]$f.completion) { $tokensOk = $false }
     }
     Assert-True "L5 identity: platform log oid == signed-in human" $identityOk "callerObjectId did not match the caller"
-    Assert-True "L5 tokens: platform log == model usage object" $tokensOk "logged tokens differ from the API usage"
+    Assert-True "L5 tokens: platform log == model usage object" $tokensOk "logged tokens differ from the API usage (reasoning/streaming?)"
 
-    # L6. Coverage.
+    # L5b. Prove the dedup FILTER is load-bearing: the RequestResponse category emits 2 rows/call, so
+    #      the UNFILTERED count for our ids must exceed the attributed count (else isnotempty(oid) did nothing).
+    $kqlUnfiltered = @"
+AzureDiagnostics
+| where TimeGenerated > ago(${LookbackMinutes}m)
+| where ResourceProvider == 'MICROSOFT.COGNITIVESERVICES'
+| where Category == 'RequestResponse' and event_s == 'ShoeboxCallResult'
+| where CorrelationId in ($ids)
+| count
+"@
+    $unfiltered = @(Run-Kql $kqlUnfiltered $WorkspaceId)
+    $unfilteredCount = if ($unfiltered.Count -gt 0) { [int]$unfiltered[0].Count } else { 0 }
+    Assert-True "L5b filter is load-bearing: unfiltered rows > attributed rows" ($unfilteredCount -gt $deduped.Count) "unfiltered=$unfilteredCount attributed=$($deduped.Count) - the twin-row filter removed nothing"
+
+    # L5c. Independent meter cross-check: join AzureOpenAIRequestUsage (a SEPARATE log category) and
+    #      assert cached is a subset of prompt on the usage log itself - not just an echo of the response.
+    $kqlUsage = @"
+AzureDiagnostics
+| where TimeGenerated > ago(${LookbackMinutes}m)
+| where ResourceProvider == 'MICROSOFT.COGNITIVESERVICES'
+| where Category == 'AzureOpenAIRequestUsage'
+| extend u = parse_json(properties_s)
+| where CorrelationId in ($ids)
+| project CorrelationId, uPrompt = tolong(u.promptTokens[0]), uCached = tolong(u.cachedTokens[0])
+"@
+    $usageRows = @(Run-Kql $kqlUsage $WorkspaceId)
+    $cachedSubsetOk = $true
+    foreach ($ur in $usageRows) { if ([long]$ur.uCached -gt [long]$ur.uPrompt) { $cachedSubsetOk = $false } }
+    Assert-True "L5c independent usage log joins on CorrelationId" ($usageRows.Count -gt 0) "AzureOpenAIRequestUsage returned no rows for our ids"
+    Assert-True "L5c cached is a subset of prompt (usage log)" $cachedSubsetOk "cachedTokens > promptTokens in AzureOpenAIRequestUsage"
+
+    # L5d. Negative discrimination: a KNOWN-ABSENT CorrelationId must return ZERO rows. This kills the
+    #      'coverage is 100% by construction' tautology - it proves the query actually discriminates.
+    $fakeId = [guid]::NewGuid().ToString()
+    $kqlNeg = @"
+AzureDiagnostics
+| where TimeGenerated > ago(${LookbackMinutes}m)
+| where Category == 'RequestResponse' and event_s == 'ShoeboxCallResult'
+| where CorrelationId == '$fakeId'
+| count
+"@
+    $neg = @(Run-Kql $kqlNeg $WorkspaceId)
+    $negCount = if ($neg.Count -gt 0) { [int]$neg[0].Count } else { 0 }
+    Assert-Eq "L5d negative control: an absent CorrelationId returns 0 rows" $negCount 0
+
+    # L6. Coverage (now meaningful because L5d proved the query discriminates).
     $cv = Get-Coverage -Expected $fired.Count -Captured $deduped.Count
     Assert-Near "L6 coverage == 100% for a clean run" $cv.pct 100
 
@@ -210,12 +288,20 @@ AzureDiagnostics
       Write-Host ("    priced {0} calls at list price = `${1}" -f $fired.Count, [Math]::Round($priced, 8))
     }
 
-    # L8. Reconciliation (reported, not gated - Cost Management lags hours to days).
+    # L8. Reconciliation. Report by default; GATE only when a settled total AND a tolerance are supplied.
+    #     WARNING: comparing a few probe calls to a resource-DAY total is meaningless unless that day
+    #     contains ONLY these probes. Scope the resource total to the same calls/window before gating.
     if ($ResourceTotalUsd -ge 0) {
       $r = Get-ReconciliationResidual -EstimateSum $priced -ResourceTotal $ResourceTotalUsd
       Write-Host ("    reconciliation: estimate=`${0} resourceTotal=`${1} residual=`${2} ({3}%)" -f $r.estimateSum, $r.resourceTotal, $r.residual, $r.residualPct)
+      Write-Host "    (ensure resourceTotal is scoped to THESE calls, not an unrelated resource-day total.)" -ForegroundColor Yellow
+      if ($ReconcileTolerance -ge 0) {
+        Assert-True "L8 reconciliation within tolerance" ([Math]::Abs($r.residual) -le $ReconcileTolerance) "residual $($r.residual) > tolerance $ReconcileTolerance"
+      } else {
+        Write-Host "    reconciliation: REPORTED not gated (pass -ReconcileTolerance to gate a settled, scope-aligned period)." -ForegroundColor Yellow
+      }
     } else {
-      Write-Host "    reconciliation: skipped (pass -ResourceTotalUsd once Cost Management has settled; it lags hours-days)." -ForegroundColor Yellow
+      Write-Host "    reconciliation: PENDING (pass -ResourceTotalUsd once Cost Management has settled; it lags hours-days)." -ForegroundColor Yellow
     }
   }
 } else {
@@ -223,5 +309,21 @@ AzureDiagnostics
 }
 
 # =====================================================================
+#  Scoped result banner - so a green run is never overstated as more than it tested.
+# =====================================================================
+$rev = (git -C $PSScriptRoot rev-parse --short HEAD 2>$null); if (-not $rev) { $rev = "unknown" }
+$stamp = (Get-Date).ToUniversalTime().ToString("o")
+Write-Host "`n=== RESULT (toolkit rev $rev, $stamp) ===" -ForegroundColor Cyan
+if ($script:fail -eq 0) { Write-Host "  OFFLINE LOGIC: PASS" } else { Write-Host "  OFFLINE LOGIC: FAIL" }
+if ($liveRan) {
+  if ($script:fail -eq 0) { Write-Host "  PATTERN A LIVE: PASS" } else { Write-Host "  PATTERN A LIVE: FAIL" }
+  $reconStatus = if ($ResourceTotalUsd -ge 0 -and $ReconcileTolerance -ge 0) { "RECONCILIATION: GATED" } elseif ($ResourceTotalUsd -ge 0) { "RECONCILIATION: REPORTED (not gated)" } else { "RECONCILIATION: PENDING" }
+  Write-Host ("  {0}" -f $reconStatus)
+} else {
+  Write-Host "  PATTERN A LIVE: NOT RUN (offline only - this proves LOGIC, not your deployment)" -ForegroundColor Yellow
+  Write-Host "  RECONCILIATION: NOT RUN"
+}
+Write-Host "  PATTERN B (Claude gateway): NOT TESTED here (needs a wired gateway; see docs/03)" -ForegroundColor Yellow
+Write-Host "  SECURITY CONTROLS (least-privilege, app-only-not-attributed, unauthorized-denied): NOT TESTED" -ForegroundColor Yellow
 Write-Host ("`n=== {0} passed, {1} failed ===" -f $script:pass, $script:fail) -ForegroundColor Cyan
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }

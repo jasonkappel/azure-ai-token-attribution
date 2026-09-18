@@ -74,3 +74,28 @@ guards it.
 ## Exit code
 
 `0` = every assertion passed. `1` = at least one failed. Suitable for CI.
+
+## What it does NOT prove (read before you screenshot a green run)
+
+A green run is scoped evidence, not blanket validation. The final banner states this explicitly:
+
+- **Offline-only means logic, not your deployment.** `OFFLINE LOGIC: PASS` proves the accounting
+  math; it says nothing about your Azure wiring. Only a `-Live` run with `PATTERN A LIVE: PASS`
+  exercises your deployment.
+- **Pattern B (Claude gateway) is not tested here.** It needs a wired gateway; validate it per
+  `docs/03-setup-claude-gateway.md`. The banner marks it `NOT TESTED`.
+- **Security controls are not tested.** The suite proves the caller's oid is *logged*; it does not
+  prove an app-only / managed-identity caller is correctly **not** attributed to a human, that a
+  shared-identity call is flagged, or that an unauthorized caller/reader is denied. Run those with
+  documented **minimal** roles (not Owner) before a security sign-off. The banner marks this
+  `NOT TESTED`.
+- **The live path leans on pilot-observed fields.** `callerObjectId`, the `properties_s` token
+  counts, and `event_s == 'ShoeboxCallResult'` are observed, not documented/contracted by
+  Microsoft. If they change, the live asserts fail loudly (by design) — treat a failure as "verify
+  the field", not "the bill is wrong". Pin the probe to a **non-streaming, non-reasoning, no-tools**
+  deployment, or the token-equality assert can legitimately fail on reasoning tokens.
+- **Reconciliation is `PENDING` until you supply a settled total.** Cost Management lags hours to
+  days. Pass `-ResourceTotalUsd` to report a residual, and `-ReconcileTolerance` to *gate* it — but
+  only against a total scoped to **these** calls, never an unrelated resource-day sum. "Reported"
+  is fine during lag; a permanent financial sign-off needs the gated form over a settled period.
+
