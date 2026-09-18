@@ -6,6 +6,6 @@
   "timeRangeHours": 168,
   "//rateCardCsv": "Path to the effective-dated rate card used to price tokens (see aoai-no-gateway/03-pricing-table.sample.csv). Never commit real contract prices.",
   "rateCardCsv": "./rate-card.csv",
-  "//enrichmentTable": "OPTIONAL. Custom-table name the portal prefers for department/app/user + all meters. Defaults to AiSpendEnrichment_CL. Remove or leave as-is if you have not wired the enrichment pipeline; the portal falls back to the platform + gateway logs.",
+  "//enrichmentTable": "OPTIONAL. Custom-table name the portal prefers for department/app/user + all meters. Defaults to AiSpendEnrichment_CL, which you create with portal/enrichment-table-dcr.bicep (see docs/07-data-model.md). Leave as-is if you have not deployed it; the portal falls back to the platform + gateway logs (per principal).",
   "enrichmentTable": "AiSpendEnrichment_CL"
 }

@@ -33,11 +33,13 @@ stays `—` and reconciles at the resource total.
 ## Where department / app / user come from
 
 The portal prefers the **enrichment custom table** (`AiSpendEnrichment_CL`), which carries
-department / app / user and every token meter per call. When that table is not wired,
-`query-helper.ps1` falls back to the platform diagnostic log (Pattern A) and gateway LLM log
-(Pattern B) and attributes **per principal** — department / app / user then read "(unattributed)"
-and the record's principal oid stands in for the user. The sidebar's data-source note tells you
-which mode produced the current view. A failed query shows a red banner (never a silent $0).
+department / app / user and every token meter per call. Create it with
+`portal/enrichment-table-dcr.bicep` (schema and how it relates to the Pattern A cross-check table
+are in `docs/07-data-model.md`). When that table is not wired, `query-helper.ps1` falls back to the
+platform diagnostic log (Pattern A) and gateway LLM log (Pattern B) and attributes **per
+principal** — department / app / user then read "(unattributed)" and the record's principal oid
+stands in for the user. The sidebar's data-source note tells you which mode produced the current
+view. A failed query shows a red banner (never a silent $0).
 
 
 ## What you supply

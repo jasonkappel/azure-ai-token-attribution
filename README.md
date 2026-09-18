@@ -59,11 +59,12 @@ are attributed and throttled even though Claude Code is a third-party CLI you do
 AIBilling/
   README.md  LICENSE  .gitignore
   docs/                 00-prerequisites, 01-how-it-works, 02/03 setup per pattern, 04-portal,
-                        05-operations-and-gotchas, 06-pilot-decision-and-gate
+                        05-operations-and-gotchas, 06-pilot-decision-and-gate, 07-data-model
   lib/                  AiBilling.Metering.psm1 - the shared cost model (one source of truth)
   aoai-no-gateway/      Pattern A: 9 files (diagnostics, KQL, rate card, enrichment, canary, DCR, Power BI)
   claude-gateway/       Pattern B: ARM, app registration, backend wiring, policy, diagnostics, client, sample agent, KQL
-  portal/               index.html (left-nav, 4 views + drill-down), query-helper.ps1, config.sample.json
+  portal/               index.html (left-nav, 4 views + drill-down), query-helper.ps1,
+                        enrichment-table-dcr.bicep, config.sample.json
   acceptance/           run-acceptance.ps1 - offline logic suite + gated live round trip
 ```
 
