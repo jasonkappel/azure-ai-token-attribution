@@ -4,15 +4,41 @@ This gets you per-principal token attribution and a list-price cost estimate for
 OpenAI, using only diagnostic logs, Log Analytics, and a rate card. No API Management, no
 change to the calling app for the core meter.
 
-## What you need first
+## Azure services you will use
 
-- An Azure OpenAI or Foundry (`Microsoft.CognitiveServices/accounts`) resource.
-- A Log Analytics workspace, ideally in the same region for residency control.
-- Roles: Monitoring Contributor on the resource (to write a diagnostic setting), and read
-  access to the workspace.
-- A decision made with your privacy team: enabling `RequestResponse` writes every interactive
-  caller's Entra object id into the workspace. That is employee-identifying telemetry.
-  Complete a privacy review or DPIA before you do this in production.
+| Service | Why | Notes |
+|---|---|---|
+| Azure OpenAI or Foundry (`Microsoft.CognitiveServices/accounts`) | The model you are attributing | Keys off (`disableLocalAuth=true`) so every call carries a principal |
+| Log Analytics workspace (`Microsoft.OperationalInsights`) | Holds the diagnostic logs you query | Put it in an approved region for residency |
+| Azure Monitor diagnostic settings | Routes the two log categories to the workspace | Set once per resource |
+| Data Collection Endpoint + Rule (`Microsoft.Insights`) | Optional: the app-enrichment table | Only for the user-and-app view |
+| Azure Cost Management | Reconciles the estimate to billed cost | Read access is enough |
+| Power BI | Optional reporting alongside the portal in this repo | See `08-powerbi-setup.md` |
+
+## Permissions you need
+
+Roles are split by what you are doing. Least privilege: the person running queries does
+not need the deploy roles.
+
+| Task | Role | Scope |
+|---|---|---|
+| Turn keys off + create the diagnostic setting | Cognitive Services Contributor (or Contributor) and Monitoring Contributor | The Azure OpenAI / Foundry resource |
+| Run the attribution queries (02, 06) | Log Analytics Reader | The workspace (grants `Microsoft.OperationalInsights/workspaces/query/read`) |
+| Per-human native attribution | Cognitive Services OpenAI User (data-plane) | The model deployment, granted to the calling users |
+| Deploy the enrichment table + DCR (07) | Contributor to deploy, plus User Access Administrator (or RBAC Administrator) to assign the role in the template | The resource group |
+| Send enrichment records (the app identity) | Monitoring Metrics Publisher | The DCR (the Bicep assigns this for you) |
+| Run the SP/MI verification (05) | Application Developer + a data-plane role assignment right | Tenant + the resource |
+| Reconcile to billed cost | Cost Management Reader | The subscription or billing scope |
+
+The single role most people forget: to run the KQL you need **Log Analytics Reader on the
+workspace**, not just Reader on the resource. Reader on the Azure OpenAI account lets you see
+the resource; it does not let you query its logs.
+
+## One decision to make first
+
+Enabling `RequestResponse` writes every interactive caller's Entra object id into the
+workspace. That is employee-identifying telemetry. Complete a privacy review or DPIA before
+you do this in production, and restrict workspace RBAC so query access is deliberate.
 
 ## Step 1: turn keys off and enable diagnostics
 

@@ -5,16 +5,42 @@ Foundry-hosted Claude model through an API Management gateway. The gateway valid
 user's own Entra token, so you can attribute and throttle per person even though Claude Code
 is a third-party CLI you do not control.
 
-## What you need first
+## Azure services you will use
 
-- A Foundry resource with Claude deployed (for example Sonnet, Opus, Haiku). Billing is Azure
-  Marketplace token-metered pay-as-you-go.
-- An APIM v2 tier. The Anthropic Messages `llm-*` policies understand the Anthropic schema
-  only on v2 (Basic v2, Standard v2, or Premium v2).
-- Azure CLI signed in with rights to deploy ARM, create an app registration, wire APIM, and
-  assign a data-plane role on the Foundry resource.
-- The same governance decision as Pattern A, plus more sensitivity: coding-tool usage per
-  developer is worker monitoring. Complete a privacy review or DPIA first.
+| Service | Why | Notes |
+|---|---|---|
+| Foundry resource with Claude deployed | The model behind the gateway | Billing is Azure Marketplace token-metered pay-as-you-go |
+| API Management, v2 tier (`Microsoft.ApiManagement`) | The gateway that validates, strips, stamps, and throttles | Must be v2 (Basic v2 / Standard v2 / Premium v2); the `llm-*` policies need it. Put it on a private or internal network for production |
+| Entra ID app registration | The audience the gateway validates tokens against | Created without admin consent (pre-authorizes the Azure CLI client) |
+| Log Analytics workspace | Holds the gateway LLM log and the identity row | The attribution source of record |
+| Azure Monitor (diagnostic settings + APIM logger) | Captures `GatewayLlmLogs` + the `x-caller-oid` header | Configured by `05-enable-diagnostics.ps1` |
+| Azure Cost Management | Reconciles to the Marketplace meter total | Read access is enough |
+
+## Permissions you need
+
+| Task | Role | Scope |
+|---|---|---|
+| Deploy the APIM v2 ARM template (01) | Contributor | The resource group |
+| Create the gateway app registration (02) | Application Developer (create app) | Entra tenant |
+| Assign users to the `Claude.User` role (02) | Owner of the new service principal, or Cloud Application Administrator | The app / SP |
+| Wire the API, backend, and policy (03) | API Management Service Contributor | The APIM instance |
+| Grant the APIM managed identity the Foundry role (03) | Owner or User Access Administrator (or RBAC Administrator) | The Foundry resource |
+| Enable gateway diagnostics (05) | API Management Service Contributor and Monitoring Contributor | APIM + the workspace |
+| Run the attribution query (09) | Log Analytics Reader | The workspace |
+| Call the gateway (developer) | Holds the `Claude.User` app role and can `az login` | n/a |
+| Reconcile to the Marketplace meter | Cost Management Reader | The subscription or billing scope |
+
+As in Pattern A, running the KQL needs **Log Analytics Reader on the workspace**, not just
+Reader on APIM. The backend-role grant in step 3 is the one that trips people up: assigning a
+role to the APIM managed identity requires Owner or User Access Administrator on the Foundry
+resource, which is a higher bar than the API Management Service Contributor role that covers
+the rest of the wiring.
+
+## One decision to make first
+
+The oid on every attribution record is per-developer coding intensity, which is more
+sensitive than generic model use. Treat it as worker monitoring: complete a privacy review or
+DPIA before production, and lock Log Analytics RBAC and retention.
 
 The scripts are numbered in deployment order. Run them in sequence.
 

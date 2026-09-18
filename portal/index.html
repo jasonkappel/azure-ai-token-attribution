@@ -114,10 +114,27 @@ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;le
 </div>
 
 <script>
-const fmt = n => (n==null?"—":Number(n).toLocaleString());
-const usd = n => (n==null?"—":"$"+Number(n).toFixed(4));
-const COLORS = {aoai:"#5B8FF0", claude:"#6DBFA9"};
+/*
+  data.json contract (written by query-helper.ps1). Both row arrays may be empty; a
+  pattern you have not wired up simply contributes no rows and its section stays blank.
+    {
+      "generatedAt":    "<ISO 8601 UTC>",
+      "timeRangeHours": <number>,
+      "aoai":   { "rows": [ { oid, model, deployment, calls, promptTokens,
+                             completionTokens, cachedInput, estCostUsd } ] },
+      "claude": { "rows": [ { oid, model, calls, promptTokens,
+                             completionTokens, estCostUsd } ] }
+    }
+  estCostUsd is a list-price estimate the helper already computed from the rate card;
+  the portal never prices anything itself, it only sums and displays.
+*/
 
+// --- Display formatters. Everything nullable renders as an em-dash rather than "NaN". ---
+const fmt = n => (n==null?"—":Number(n).toLocaleString());   // integer-ish counts with thousands separators
+const usd = n => (n==null?"—":"$"+Number(n).toFixed(4));     // dollars to 4dp (costs are small per window)
+const COLORS = {aoai:"#5B8FF0", claude:"#6DBFA9"};            // soft Microsoft blue / green, one per pattern
+
+// True when neither pattern returned any rows -> the page keeps its "Not configured" state.
 function isEmpty(data){
   if(!data) return true;
   const a = data.aoai && data.aoai.rows && data.aoai.rows.length;
@@ -125,9 +142,15 @@ function isEmpty(data){
   return !a && !g;
 }
 
+// Count of distinct principals (Entra object ids) across a row set -> the KPI card value.
 function distinct(rows){ return new Set(rows.map(r=>r.oid)).size; }
+// Sum one numeric field across rows, coercing safely (missing/undefined -> 0).
 function sum(rows, k){ return rows.reduce((s,r)=>s+(Number(r[k])||0),0); }
 
+// Render a horizontal "estimated cost by model" bar chart into `el`.
+// Rows are grouped by model, summed, and scaled to the largest bar so the widest
+// model fills the track. The tiny max floor (0.0000001) avoids divide-by-zero when
+// every cost is 0 (e.g. a rate card that has not been filled in yet).
 function bars(el, rows, color){
   const byModel = {};
   rows.forEach(r=>{ byModel[r.model] = (byModel[r.model]||0) + (Number(r.estCostUsd)||0); });
@@ -139,6 +162,9 @@ function bars(el, rows, color){
      <div class="barval">${usd(v)}</div></div>`).join("") || '<div class="mono">No rows.</div>';
 }
 
+// Fill every KPI, chart, and table from the data object. Called only when data is non-empty.
+// oids are truncated to 13 chars in the UI; the portal shows the raw id here, so in a governed
+// deployment pseudonymize upstream (in query-helper / the workspace) rather than in the browser.
 function render(data){
   document.getElementById("empty").classList.add("hide");
   document.getElementById("dash").classList.remove("hide");
@@ -148,7 +174,7 @@ function render(data){
   const aRows = (data.aoai && data.aoai.rows) || [];
   const gRows = (data.claude && data.claude.rows) || [];
 
-  // Azure OpenAI
+  // --- Azure OpenAI (no gateway): tokens = prompt + completion; cost is pre-priced. ---
   const aTokens = sum(aRows,"promptTokens")+sum(aRows,"completionTokens");
   const aCost = sum(aRows,"estCostUsd"), aCalls = sum(aRows,"calls");
   document.getElementById("a-cost").textContent = usd(aCost);
@@ -164,7 +190,7 @@ function render(data){
      <td class="num">${fmt(r.completionTokens)}</td><td class="num">${fmt(r.cachedInput)}</td>
      <td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
 
-  // Claude via gateway
+  // --- Claude (via gateway): prompt + completion only; per-user cache is not captured. ---
   const gTokens = sum(gRows,"promptTokens")+sum(gRows,"completionTokens");
   const gCost = sum(gRows,"estCostUsd"), gCalls = sum(gRows,"calls");
   document.getElementById("g-cost").textContent = usd(gCost);
@@ -178,7 +204,8 @@ function render(data){
      <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
      <td class="num">${fmt(r.completionTokens)}</td><td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
 
-  // Combined
+  // --- Combined total: costs and tokens simply add; principals are a UNION (the same
+  //     person calling both patterns must count once, so we dedupe oids across both sets). ---
   const allOids = new Set([...aRows.map(r=>r.oid), ...gRows.map(r=>r.oid)]);
   document.getElementById("c-cost").textContent = usd(aCost+gCost);
   document.getElementById("c-tokens").textContent = fmt(aTokens+gTokens);
@@ -196,9 +223,11 @@ function render(data){
     `AI Spend Attribution | Illustrative rates | ${hrs}${gen?` | generated ${gen}`:""}`;
 }
 
-fetch("data.json", {cache:"no-store"})
-  .then(r => r.ok ? r.json() : null)
+// Load the live data and render. Missing file, non-OK response, empty payload, or a
+// file:// fetch block all fall through to the pre-rendered "Not configured" state.
+fetch("data.json", {cache:"no-store"})            // no-store so a re-run is picked up on reload
+  .then(r => r.ok ? r.json() : null)              // 404 (never generated) -> null -> stays blank
   .then(d => { if(isEmpty(d)) return; render(d); })
-  .catch(()=>{ /* leave the Not configured state */ });
+  .catch(()=>{ /* file:// fetch blocked, or bad JSON: leave the Not configured state */ });
 </script>
 </div></body></html>

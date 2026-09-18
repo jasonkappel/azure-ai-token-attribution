@@ -66,6 +66,9 @@ AIBilling/
 
 ## Quickstart, Pattern A (Azure OpenAI, no gateway)
 
+Services and the exact RBAC (including that querying needs Log Analytics Reader on the
+workspace, not just Reader on the resource) are in `docs/02-setup-aoai-no-gateway.md`.
+
 1. Run `aoai-no-gateway/01-enable-diagnostics.azcli` to turn keys off and send the
    `RequestResponse` and `AzureOpenAIRequestUsage` categories to Log Analytics.
 2. Run `aoai-no-gateway/02-attribution.kql` in that workspace. Confirm one row per call.
@@ -78,6 +81,9 @@ AIBilling/
 Full walkthrough: `docs/02-setup-aoai-no-gateway.md`.
 
 ## Quickstart, Pattern B (Claude via gateway)
+
+Services and the exact RBAC (the backend-role grant needs Owner or User Access Administrator
+on the Foundry resource) are in `docs/03-setup-claude-gateway.md`.
 
 1. Provision APIM v2: `az deployment group create -g <RESOURCE_GROUP> --template-file claude-gateway/01-apim-basicv2.arm.json --parameters serviceName=<APIM_NAME> publisherEmail=<ADMIN_EMAIL>`. Note the `principalId` output.
 2. Create the gateway app registration (no admin consent): `claude-gateway/02-gateway-app-registration.ps1`.
