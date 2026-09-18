@@ -133,6 +133,11 @@ correlation id and reconcile row totals to independent control totals (APIM coun
 Cost Management), reporting a coverage percentage rather than presenting the ledger as a closed
 invoice.
 
+These rules are enforced, not just documented: `acceptance/run-acceptance.ps1` asserts each one —
+the two algebras, the cache tiers, thinking-never-added-or-subtracted, and the integrity gates —
+against the shared cost model in `lib/AiBilling.Metering.psm1`, the same code the portal prices
+with.
+
 ## When to use which
 
 Use Pattern A for showback and reconciliation on apps that authenticate with Entra and,

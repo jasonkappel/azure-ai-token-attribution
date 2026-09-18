@@ -1,0 +1,7 @@
+# FIXED test rate card for the acceptance suite ONLY. Round numbers so expected costs in
+# run-acceptance.ps1 can be hand-verified. This is NOT a real price list and is independent of the
+# production rate card (aoai-no-gateway/03-pricing-table.sample.csv) so the tests never drift
+# when a customer edits their real rates. Units: USD per 1,000,000 tokens.
+model,deployment_type,region,currency,input_per_1m,cached_input_per_1m,output_per_1m,cache_write_5m_per_1m,cache_write_1h_per_1m,cache_read_per_1m,valid_from,valid_to,source
+test-aoai,GlobalStandard,global,USD,10.00,1.00,20.00,,,,2026-01-01,,acceptance-fixed
+test-claude,Foundry,global,USD,10.00,,20.00,12.50,20.00,1.00,2026-01-01,,acceptance-fixed

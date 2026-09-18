@@ -39,22 +39,15 @@ if ($rateCsv -and -not [System.IO.Path]::IsPathRooted($rateCsv)) {
   $rateCsv = Join-Path $PSScriptRoot $rateCsv
 }
 
+# ---- Import the shared metering module (the ONE cost-model implementation). ----
+Import-Module (Join-Path $PSScriptRoot '..\lib\AiBilling.Metering.psm1') -Force
+
 # ---- Load the rate card into a per-model lookup (USD per 1,000,000 tokens). ----
-$rates = @{}
 if ($rateCsv -and (Test-Path $rateCsv)) {
-  Import-Csv $rateCsv | Where-Object { $_.model -and $_.model -notmatch '^\s*#' } | ForEach-Object {
-    $col = { param($n) if ($_.PSObject.Properties[$n] -and $_.$n) { [double]$_.$n } else { 0 } }
-    $rates[$_.model] = @{
-      input      = [double]$_.input_per_1m
-      cached     = (& $col 'cached_input_per_1m')     # AOAI cached-read discount
-      output     = [double]$_.output_per_1m
-      cacheW5m   = (& $col 'cache_write_5m_per_1m')    # Claude 5m cache write (~1.25x)
-      cacheW1h   = (& $col 'cache_write_1h_per_1m')    # Claude 1h cache write (~2x)
-      cacheRead  = (& $col 'cache_read_per_1m')        # Claude cache read (~0.1x)
-    }
-  }
+  $rates = Import-RateCard -Path $rateCsv
 } else {
-  Write-Warning "Rate card CSV not found ($rateCsv). Costs will be 0. Set rateCardCsv in config.json."
+  $rates = @{}
+  Write-Warning "Rate card CSV not found ($rateCsv). Costs will be UNPRICED (null). Set rateCardCsv in config.json."
 }
 
 function Invoke-Kql([string]$query) {
@@ -72,29 +65,19 @@ function Invoke-Kql([string]$query) {
   finally { Remove-Item $tmp -Force }
 }
 
+# Thin row-adapters over the shared cost model, so the portal and the acceptance test price
+# identically. Defensive field reads keep them null-safe on rows that lack the optional meters.
+function Get-Field($r, $n) { if ($r.PSObject.Properties[$n] -and $r.$n) { return [long]$r.$n } else { return 0 } }
 function Price-Aoai($r) {
-  # Two-algebra rule (AOAI): prompt_tokens INCLUDES cached_tokens, so billable input = prompt - cached.
-  # Reasoning tokens are a subset of completion and are already priced inside output - never add them.
-  # Returns $null (UNPRICED) when the model has no rate row - do NOT report unknown price as $0.
-  $rc = $rates[$r.model]; if (-not $rc) { return $null }
-  $prompt = [double]$r.promptTokens; $cached = [double]$r.cachedInput; $comp = [double]$r.completionTokens
-  $billable = [Math]::Max($prompt - $cached, 0)
-  return ($billable*$rc.input + $cached*$rc.cached + $comp*$rc.output) / 1000000.0
+  return Get-AoaiCost -Rates $rates -Model $r.model `
+    -PromptTokens (Get-Field $r 'promptTokens') -CachedTokens (Get-Field $r 'cachedInput') `
+    -CompletionTokens (Get-Field $r 'completionTokens')
 }
 function Price-Claude($r) {
-  # Two-algebra rule (Claude): input_tokens is ALREADY uncached (exclusive of cache meters), so ADD the
-  # meters - never subtract. Cache write has 5m/1h tiers priced differently. thinking_tokens are a subset
-  # of output (already in completionTokens) and are NEVER added. The per-user gateway (streaming) path
-  # carries only prompt+completion; the extra meters are absent and this reduces to prompt+completion.
-  # Returns $null (UNPRICED) when the model has no rate row.
-  $rc = $rates[$r.model]; if (-not $rc) { return $null }
-  $g = { param($n) if ($r.PSObject.Properties[$n] -and $r.$n) { [double]$r.$n } else { 0 } }
-  $w5 = (& $g 'cacheWrite5m'); $w1 = (& $g 'cacheWrite1h')
-  # Partial-capture guard: if only the scalar total write is present (no 5m/1h split), price it at the
-  # 5m rate rather than silently billing the write at $0. Never let a captured write cost nothing.
-  if ($w5 -eq 0 -and $w1 -eq 0) { $w5 = (& $g 'cacheCreation') }
-  return ( [double]$r.promptTokens*$rc.input + [double]$r.completionTokens*$rc.output `
-         + $w5*$rc.cacheW5m + $w1*$rc.cacheW1h + (& $g 'cacheRead')*$rc.cacheRead ) / 1000000.0
+  return Get-ClaudeCost -Rates $rates -Model $r.model `
+    -InputTokens (Get-Field $r 'promptTokens') -OutputTokens (Get-Field $r 'completionTokens') `
+    -CacheWrite5m (Get-Field $r 'cacheWrite5m') -CacheWrite1h (Get-Field $r 'cacheWrite1h') `
+    -CacheRead (Get-Field $r 'cacheRead') -CacheCreationTotal (Get-Field $r 'cacheCreation')
 }
 # costBasis labels the fidelity of each row's estimate so the portal never shows a confident dollar
 # that silently omitted cache. "full" = cache/thinking meters present; "p+c-only" = prompt+completion

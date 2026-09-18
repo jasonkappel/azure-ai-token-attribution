@@ -59,9 +59,11 @@ are attributed and throttled even though Claude Code is a third-party CLI you do
 AIBilling/
   README.md  LICENSE  .gitignore
   docs/                 how-it-works + one setup guide per pattern + portal
+  lib/                  AiBilling.Metering.psm1 - the shared cost model (one source of truth)
   aoai-no-gateway/      Pattern A: 9 files (diagnostics, KQL, rate card, enrichment, canary, DCR, Power BI)
   claude-gateway/       Pattern B: ARM, app registration, backend wiring, policy, diagnostics, client, sample agent, KQL
   portal/               index.html (3 views + combined), query-helper.ps1, config.sample.json
+  acceptance/           run-acceptance.ps1 - offline logic suite + gated live round trip
 ```
 
 ## Quickstart, Pattern A (Azure OpenAI, no gateway)
@@ -103,6 +105,18 @@ table (input / output / cache-write / cache-read / thinking) and a persistent ho
 banner. It is live-only. It reads `portal/data.json` and shows "Not configured" until you
 generate it, and it ships with no sample data. Fill `config.sample.json` (save as
 `config.json`), run `query-helper.ps1`, and reload. Details in `docs/04-portal.md`.
+
+## Prove it works: the acceptance test
+
+`acceptance/run-acceptance.ps1` is the evidence a FinOps or security review asks for. Offline (no
+Azure) it asserts the accounting logic — the two cost algebras, cache tiers, thinking-is-never-a-
+separate-charge, the integrity gates, dedup, coverage, and unpriced-not-$0 — against a fixed test
+rate card with hand-verifiable numbers. With `-Live` it runs the real round trip: signs in as you,
+fires a couple of Azure OpenAI calls, waits for the diagnostic log, and asserts the log's
+`callerObjectId` is *your* Entra id and its tokens equal the model's `usage` object, plus a RBAC
+preflight and coverage. It exits non-zero on any failure, so it drops into CI. Both the test and
+the portal import the same cost model (`lib/AiBilling.Metering.psm1`), so the test guards the exact
+math the portal ships. Details in `acceptance/README.md`.
 
 ## The honest caveats
 
