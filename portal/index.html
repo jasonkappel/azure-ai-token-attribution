@@ -1,0 +1,204 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Azure AI Spend Attribution — Portal</title>
+<!--
+  Live-only portal. It reads ./data.json (written by query-helper.ps1) and renders three
+  views: Azure OpenAI (no gateway), Claude (via gateway), and a combined total. There is
+  NO bundled sample data. If data.json is missing or empty, it shows "Not configured".
+  Self-contained: no external scripts, styles, or fonts.
+  Tip: some browsers block fetch() over file://. If you see "Not configured" after wiring,
+  serve the folder locally (e.g. `python -m http.server` in portal/) and open via http://.
+-->
+<style>
+:root{
+  --ink:#1b2637; --muted:#5c6b82; --line:#e3e9f2; --card:#ffffff; --bg:#f4f7fb;
+  --accent:#3b6fd4; --aoai:#5B8FF0; --claude:#6DBFA9; --combined:#8A79C7;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:28px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:14px;margin-bottom:6px}
+.status{display:inline-block;font-weight:600;font-size:12px;padding:3px 10px;border-radius:20px;margin-bottom:20px}
+.status.live{background:#e8f5ee;color:#1b7a4b}
+.status.blank{background:#fdeee3;color:#96591c}
+section{margin-bottom:26px}
+.sechead{display:flex;align-items:center;gap:10px;margin:0 0 12px}
+.dot{width:12px;height:12px;border-radius:3px}
+.sechead h2{font-size:17px;margin:0;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+.kpi .n{font-size:26px;font-weight:700}
+.kpi .l{color:var(--muted);font-size:13px;margin-top:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.card h3{font-size:14px;margin:0 0 14px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.mono{font-family:'Cascadia Code',Consolas,monospace;font-size:12px;color:var(--muted)}
+.pill{padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+.barrow{display:grid;grid-template-columns:150px 1fr 100px;align-items:center;gap:10px;margin-bottom:10px;font-size:13px}
+.bartrack{background:#eef2f8;border-radius:8px;height:22px;overflow:hidden}
+.barfill{height:100%;border-radius:8px}
+.barval{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.note{background:#fff7ec;border:1px solid #f2e1c4;border-radius:12px;padding:14px 16px;font-size:13px;color:#6b5426;margin-bottom:20px}
+.empty{background:var(--card);border:1px dashed #c7d3e6;border-radius:14px;padding:40px;text-align:center;color:var(--muted)}
+.empty h2{color:var(--ink);font-size:18px;margin:0 0 8px}
+.empty code{background:#eef2f8;padding:2px 6px;border-radius:5px;font-size:13px}
+.combined .kpi{border-color:#d8d1ee;background:#faf9fe}
+.foot{color:var(--muted);font-size:12px;text-align:center;margin-top:8px}
+.hide{display:none}
+</style></head><body><div class="wrap">
+<h1>Azure AI spend attribution</h1>
+<div class="sub">Per-principal token usage and list-price cost across two patterns, plus a combined total.</div>
+<div id="status" class="status blank">● Not configured</div>
+
+<div id="empty" class="empty">
+  <h2>Not configured</h2>
+  <p>This portal is live-only and ships with no sample data.</p>
+  <p>Fill <code>config.sample.json</code> (save it as <code>config.json</code>), then run
+  <code>query-helper.ps1</code> to generate <code>data.json</code>. Reload this page.</p>
+</div>
+
+<div id="dash" class="hide">
+  <div class="note" id="caveat"></div>
+
+  <!-- Combined total -->
+  <section class="combined">
+    <div class="sechead"><span class="dot" style="background:var(--combined)"></span><h2>Combined total</h2></div>
+    <div class="grid">
+      <div class="kpi"><div class="n" id="c-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="c-tokens">—</div><div class="l">Total tokens</div></div>
+      <div class="kpi"><div class="n" id="c-calls">—</div><div class="l">Attributed calls</div></div>
+      <div class="kpi"><div class="n" id="c-principals">—</div><div class="l">Distinct principals</div></div>
+    </div>
+  </section>
+
+  <!-- Azure OpenAI (no gateway) -->
+  <section>
+    <div class="sechead"><span class="dot" style="background:var(--aoai)"></span><h2>Azure OpenAI — no gateway</h2></div>
+    <div class="grid">
+      <div class="kpi"><div class="n" id="a-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="a-tokens">—</div><div class="l">Total tokens</div></div>
+      <div class="kpi"><div class="n" id="a-calls">—</div><div class="l">Attributed calls</div></div>
+      <div class="kpi"><div class="n" id="a-principals">—</div><div class="l">Distinct principals</div></div>
+    </div>
+    <div class="card"><h3>Estimated cost by model</h3><div id="a-bars"></div></div>
+    <div class="card"><h3>Per-principal &times; model</h3>
+      <table><thead><tr><th>Principal (oid)</th><th>Model</th><th>Deployment</th>
+        <th class="num">Calls</th><th class="num">Prompt</th><th class="num">Completion</th>
+        <th class="num">Cached</th><th class="num">Est. cost</th></tr></thead>
+        <tbody id="a-rows"></tbody></table></div>
+  </section>
+
+  <!-- Claude (via gateway) -->
+  <section>
+    <div class="sechead"><span class="dot" style="background:var(--claude)"></span><h2>Claude — via gateway</h2></div>
+    <div class="grid">
+      <div class="kpi"><div class="n" id="g-cost">—</div><div class="l">Est. cost (list-price)</div></div>
+      <div class="kpi"><div class="n" id="g-tokens">—</div><div class="l">Prompt+completion tokens</div></div>
+      <div class="kpi"><div class="n" id="g-calls">—</div><div class="l">Attributed calls</div></div>
+      <div class="kpi"><div class="n" id="g-principals">—</div><div class="l">Distinct principals</div></div>
+    </div>
+    <div class="card"><h3>Estimated cost by model</h3><div id="g-bars"></div></div>
+    <div class="card"><h3>Per-principal &times; model</h3>
+      <table><thead><tr><th>Principal (oid)</th><th>Model</th>
+        <th class="num">Calls</th><th class="num">Prompt</th><th class="num">Completion</th>
+        <th class="num">Est. cost</th></tr></thead>
+        <tbody id="g-rows"></tbody></table>
+      <div class="mono" style="margin-top:10px">Per-user cache tokens are not captured at the gateway on streaming; cache reconciles at the resource total.</div></div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+const fmt = n => (n==null?"—":Number(n).toLocaleString());
+const usd = n => (n==null?"—":"$"+Number(n).toFixed(4));
+const COLORS = {aoai:"#5B8FF0", claude:"#6DBFA9"};
+
+function isEmpty(data){
+  if(!data) return true;
+  const a = data.aoai && data.aoai.rows && data.aoai.rows.length;
+  const g = data.claude && data.claude.rows && data.claude.rows.length;
+  return !a && !g;
+}
+
+function distinct(rows){ return new Set(rows.map(r=>r.oid)).size; }
+function sum(rows, k){ return rows.reduce((s,r)=>s+(Number(r[k])||0),0); }
+
+function bars(el, rows, color){
+  const byModel = {};
+  rows.forEach(r=>{ byModel[r.model] = (byModel[r.model]||0) + (Number(r.estCostUsd)||0); });
+  const entries = Object.entries(byModel);
+  const max = Math.max(...entries.map(e=>e[1]), 0.0000001);
+  el.innerHTML = entries.map(([m,v])=>
+    `<div class="barrow"><div>${m}</div>
+     <div class="bartrack"><div class="barfill" style="width:${(100*v/max).toFixed(1)}%;background:${color}"></div></div>
+     <div class="barval">${usd(v)}</div></div>`).join("") || '<div class="mono">No rows.</div>';
+}
+
+function render(data){
+  document.getElementById("empty").classList.add("hide");
+  document.getElementById("dash").classList.remove("hide");
+  const st = document.getElementById("status");
+  st.className = "status live"; st.textContent = "● Live";
+
+  const aRows = (data.aoai && data.aoai.rows) || [];
+  const gRows = (data.claude && data.claude.rows) || [];
+
+  // Azure OpenAI
+  const aTokens = sum(aRows,"promptTokens")+sum(aRows,"completionTokens");
+  const aCost = sum(aRows,"estCostUsd"), aCalls = sum(aRows,"calls");
+  document.getElementById("a-cost").textContent = usd(aCost);
+  document.getElementById("a-tokens").textContent = fmt(aTokens);
+  document.getElementById("a-calls").textContent = fmt(aCalls);
+  document.getElementById("a-principals").textContent = fmt(distinct(aRows));
+  bars(document.getElementById("a-bars"), aRows, COLORS.aoai);
+  document.getElementById("a-rows").innerHTML = aRows.map(r=>
+    `<tr><td class="mono">${(r.oid||"").slice(0,13)}…</td>
+     <td><span class="pill" style="background:${COLORS.aoai}22;color:#33415a">${r.model||""}</span></td>
+     <td class="mono">${r.deployment||""}</td>
+     <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
+     <td class="num">${fmt(r.completionTokens)}</td><td class="num">${fmt(r.cachedInput)}</td>
+     <td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
+
+  // Claude via gateway
+  const gTokens = sum(gRows,"promptTokens")+sum(gRows,"completionTokens");
+  const gCost = sum(gRows,"estCostUsd"), gCalls = sum(gRows,"calls");
+  document.getElementById("g-cost").textContent = usd(gCost);
+  document.getElementById("g-tokens").textContent = fmt(gTokens);
+  document.getElementById("g-calls").textContent = fmt(gCalls);
+  document.getElementById("g-principals").textContent = fmt(distinct(gRows));
+  bars(document.getElementById("g-bars"), gRows, COLORS.claude);
+  document.getElementById("g-rows").innerHTML = gRows.map(r=>
+    `<tr><td class="mono">${(r.oid||"").slice(0,13)}…</td>
+     <td><span class="pill" style="background:${COLORS.claude}22;color:#33415a">${r.model||""}</span></td>
+     <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
+     <td class="num">${fmt(r.completionTokens)}</td><td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
+
+  // Combined
+  const allOids = new Set([...aRows.map(r=>r.oid), ...gRows.map(r=>r.oid)]);
+  document.getElementById("c-cost").textContent = usd(aCost+gCost);
+  document.getElementById("c-tokens").textContent = fmt(aTokens+gTokens);
+  document.getElementById("c-calls").textContent = fmt(aCalls+gCalls);
+  document.getElementById("c-principals").textContent = fmt(allOids.size);
+
+  document.getElementById("caveat").innerHTML =
+    "<b>Read the dollars as an estimate.</b> All costs are a list-price estimate reconciled to Cost Management, "+
+    "not the invoice. Azure OpenAI figures are per authenticated caller (a shared identity collapses to one "+
+    "principal). Claude figures are prompt+completion only; per-user cache is not captured at the gateway on streaming.";
+
+  const gen = data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "";
+  const hrs = data.timeRangeHours ? `${data.timeRangeHours}h window` : "";
+  document.getElementById("foot").textContent =
+    `AI Spend Attribution | Illustrative rates | ${hrs}${gen?` | generated ${gen}`:""}`;
+}
+
+fetch("data.json", {cache:"no-store"})
+  .then(r => r.ok ? r.json() : null)
+  .then(d => { if(isEmpty(d)) return; render(d); })
+  .catch(()=>{ /* leave the Not configured state */ });
+</script>
+</div></body></html>

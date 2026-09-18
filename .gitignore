@@ -1,0 +1,26 @@
+# Portal output and any local run artifacts (the portal is live-only; never commit data).
+portal/data.json
+portal/config.json
+portal/rate-card.csv
+
+# Local overrides and environment files
+*.local
+*.env
+.env
+.env.*
+
+# Secrets and tokens (never commit any of these)
+*token*
+*secret*
+*.key
+*.pem
+*.pfx
+
+# Node / tooling noise (if a contributor adds generators later)
+node_modules/
+
+# OS + editor noise
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/

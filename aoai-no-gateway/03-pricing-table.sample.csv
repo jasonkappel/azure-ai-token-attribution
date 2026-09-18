@@ -1,0 +1,8 @@
+# Effective-dated rate card. ILLUSTRATIVE public-list placeholders - REPLACE with real rates.
+# Never paste negotiated / contract prices into a repo. Keep the authoritative card in a governed store.
+# Units: USD per 1,000,000 tokens. cached_input applies to the cached SUBSET of input tokens.
+# cache_write and reasoning are model-conditional: add columns only when the invoice shows a matching meter.
+# valid_to empty = currently in effect. Overlapping [valid_from, valid_to) per (model, deployment_type, region) is an error.
+model,deployment_type,region,currency,input_per_1m,cached_input_per_1m,output_per_1m,valid_from,valid_to,source
+gpt-4.1-mini,GlobalStandard,global,USD,0.40,0.10,1.60,2026-01-01,,list-price-PLACEHOLDER
+gpt-5.6-sol,GlobalStandard,global,USD,1.25,0.125,10.00,2026-07-09,,list-price-PLACEHOLDER

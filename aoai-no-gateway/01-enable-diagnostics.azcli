@@ -1,0 +1,52 @@
+# =============================================================================
+# Pattern A - Enable Azure OpenAI diagnostic logging to Log Analytics (NO gateway)
+# -----------------------------------------------------------------------------
+# WHAT THIS DOES
+#   Turns off shared-key auth and sends the two attribution-relevant diagnostic
+#   categories from an Azure OpenAI / Foundry resource to a Log Analytics
+#   workspace. Those logs carry the authenticated caller's Entra object id plus
+#   per-request prompt/completion token counts. That is the whole meter: no API
+#   Management, no AI gateway, no change to the calling application.
+#
+# PREREQUISITES / ROLES
+#   - An Azure OpenAI or Foundry (Microsoft.CognitiveServices/accounts) resource.
+#   - A Log Analytics workspace (put it in an approved region for data residency).
+#   - Role: Monitoring Contributor on the resource (to write a diagnostic setting).
+#   - Keys OFF (disableLocalAuth=true). A shared-key call logs no principal, so
+#     without this you get token counts with no "who".
+#
+# PLACEHOLDERS TO FILL
+#   <SUBSCRIPTION_ID>            Azure subscription GUID.
+#   <RESOURCE_GROUP>            Resource group holding the resources.
+#   <FOUNDRY_RESOURCE_NAME>    Azure OpenAI / Foundry account name.
+#   <LOG_ANALYTICS_WORKSPACE_NAME>  Log Analytics workspace name.
+# =============================================================================
+
+RESOURCE_ID="/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.CognitiveServices/accounts/<FOUNDRY_RESOURCE_NAME>"
+WORKSPACE_ID="/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.OperationalInsights/workspaces/<LOG_ANALYTICS_WORKSPACE_NAME>"
+
+# Enforce Entra-only auth (required: a shared key call logs no principal).
+az cognitiveservices account update \
+  --ids "$RESOURCE_ID" \
+  --custom-domain "<FOUNDRY_RESOURCE_NAME>" \
+  --api-properties disableLocalAuth=true
+
+# Create the diagnostic setting.
+# RequestResponse         = carries callerObjectId + promptTokens/completionTokens (the attribution source).
+# AzureOpenAIRequestUsage = carries promptTokens[]/cachedTokens[]/generatedTokens[] (the cached breakdown).
+# Audit is optional (control-plane); Trace / ManagedNetworkEvent are not needed here.
+az monitor diagnostic-settings create \
+  --name "aoai-token-attribution" \
+  --resource "$RESOURCE_ID" \
+  --workspace "$WORKSPACE_ID" \
+  --logs '[
+    {"category":"RequestResponse","enabled":true},
+    {"category":"AzureOpenAIRequestUsage","enabled":true}
+  ]'
+
+# PRIVACY NOTE: enabling RequestResponse writes every interactive caller's Entra
+# object id (callerObjectId) into the workspace by default. Treat the workspace as
+# holding employee-identifying telemetry: restrict workspace RBAC, set retention,
+# and complete a privacy / DPIA review BEFORE enabling in production.
+
+# Ingestion latency: rows typically appear in 5-15 minutes on first enablement.

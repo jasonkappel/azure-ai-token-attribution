@@ -1,0 +1,52 @@
+// =============================================================================
+// Pattern A - CANARY: fail loudly if the undocumented log shape changes.
+// -----------------------------------------------------------------------------
+// WHAT THIS DOES
+//   callerObjectId / promptTokens in properties_s and the CorrelationId==apim-request-id
+//   join are PILOT-OBSERVED, not contracted by Microsoft. They can change without notice.
+//   This query flags two failure modes: the identity/token field disappearing, and the
+//   join key breaking. Schedule it as a Log Analytics alert rule and page the platform
+//   team on a hit. Pair it with a synthetic call (a scheduled job that hits the model
+//   every N minutes) so there is always a known-good row to check.
+//
+// PREREQUISITES
+//   - RequestResponse + AzureOpenAIRequestUsage flowing to the workspace.
+//   - Configure this as a scheduled alert (fires when it returns any rows).
+//
+// PLACEHOLDERS TO FILL
+//   None. Tune the lookback and the >5% thresholds to your traffic.
+// =============================================================================
+
+let lookback = 1h;
+
+// Signal 1: identity field disappeared - attributed rows dropped to zero while calls continued.
+let identityDrift =
+    AzureDiagnostics
+    | where TimeGenerated > ago(lookback)
+    | where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+    | where Category == "RequestResponse" and event_s == "ShoeboxCallResult"
+    | extend p = parse_json(properties_s)
+    | summarize calls = count(),
+                withIdentity = countif(isnotempty(tostring(p.callerObjectId))),
+                withTokens   = countif(isnotempty(tostring(p.promptTokens)))
+    | extend identityMissingPct = iff(calls == 0, 0.0, 100.0 * (calls - withIdentity) / calls),
+             tokensMissingPct   = iff(calls == 0, 0.0, 100.0 * (calls - withTokens) / calls)
+    | where calls > 0 and (identityMissingPct > 5 or tokensMissingPct > 5);
+
+// Signal 2: the join key stopped linking RequestResponse to AzureOpenAIRequestUsage.
+let joinDrift =
+    let rr = AzureDiagnostics
+        | where TimeGenerated > ago(lookback)
+        | where Category == "RequestResponse" and event_s == "ShoeboxCallResult"
+        | distinct CorrelationId;
+    let au = AzureDiagnostics
+        | where TimeGenerated > ago(lookback)
+        | where Category == "AzureOpenAIRequestUsage"
+        | distinct CorrelationId;
+    rr | join kind=leftanti au on CorrelationId
+       | summarize unjoined = count()
+       | where unjoined > 0;
+
+union
+  (identityDrift | extend signal = "identity_or_token_field_missing"),
+  (joinDrift     | extend signal = "correlationid_join_broken")

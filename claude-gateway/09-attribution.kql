@@ -1,0 +1,69 @@
+// =============================================================================
+// Pattern B - per-user Claude token attribution (via APIM, streaming-safe)
+// -----------------------------------------------------------------------------
+// WHAT THIS DOES
+//   Produces per-user prompt+completion tokens by joining APIM's native LLM token
+//   log (ApiManagementGatewayLlmLog, SSE-aware) to the caller oid the policy
+//   stamped as x-caller-oid, then prices it and reconciles the total.
+//
+//   SYSTEM OF RECORD = the native gateway LLM log. We do NOT read the streamed
+//   response body in a policy - that breaks SSE (see 04-apim-policy.xml).
+//
+//   PROVIDES per user: prompt + completion tokens (streaming-safe).
+//   DOES NOT provide per user: cache tokens. Cache is total-only reconciliation
+//   against the Foundry Azure Monitor metrics (cacheReadInputTokens / ephemeral
+//   5m/1h), which carry NO caller dimension.
+//
+// PREREQUISITES (from 05-enable-diagnostics.ps1)
+//   - ApiManagementGatewayLlmLog enabled (token logging for LLM APIs).
+//   - GatewayLogs capturing the x-caller-oid request header.
+//   - Column names below may vary by API version - confirm against the live schema.
+//
+// PLACEHOLDERS TO FILL
+//   The rate card in Q2 uses ILLUSTRATIVE list prices keyed by deployment name.
+//   Replace <CLAUDE_SONNET_DEPLOYMENT> / <CLAUDE_OPUS_DEPLOYMENT> and the rates.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Q1. Per-user prompt+completion tokens: join LLM token log to the caller-oid header.
+// -----------------------------------------------------------------------------
+let idByCorrelation =
+    ApiManagementGatewayLogs
+    | where isnotempty(CorrelationId)
+    // x-caller-oid is surfaced in the captured request headers (exact column depends on the
+    // diagnostic header-capture config; adjust to your schema, e.g. a RequestHeaders dynamic).
+    | extend callerOid = tostring(parse_json(tostring(RequestHeaders))["x-caller-oid"])
+    | where isnotempty(callerOid)
+    | project CorrelationId, callerOid;
+
+ApiManagementGatewayLlmLog
+| project TimeGenerated, CorrelationId,
+          model = tostring(DeploymentName),
+          promptTokens = tolong(PromptTokens),
+          completionTokens = tolong(CompletionTokens)
+| join kind=leftouter idByCorrelation on CorrelationId
+| summarize promptTokens = sum(promptTokens), completionTokens = sum(completionTokens), calls = count()
+          by bin(TimeGenerated, 1d), callerOid = coalesce(callerOid, "unattributed"), model
+| order by TimeGenerated desc
+
+// -----------------------------------------------------------------------------
+// Q2. Per-user LIST-PRICE ESTIMATE (prompt+completion only). Label it an estimate.
+//   Cache cost is NOT in here - it is reconciled at the resource level (Q3).
+// -----------------------------------------------------------------------------
+let rateCard = datatable(model:string, inputPerM:real, outputPerM:real)
+[
+    "<CLAUDE_SONNET_DEPLOYMENT>", 3.00, 15.00,   // ILLUSTRATIVE
+    "<CLAUDE_OPUS_DEPLOYMENT>",  15.00, 75.00    // ILLUSTRATIVE
+];
+// (join Q1 output to rateCard on model and compute input*inputPerM/1e6 + output*outputPerM/1e6)
+
+// =============================================================================
+// Q3. RECONCILIATION. Compare SUM(per-user estimate) to the Azure Marketplace meter total for
+//     the Claude resource in Cost Management, at resource x day. The gap is dominated by CACHE
+//     tokens (not attributable per user here) plus streaming/estimation error. Report it as a
+//     named residual owned by the platform team; allocate by token share only as a stated policy.
+//     Foundry cache metrics (cacheReadInputTokens / ephemeral 5m/1h) reconcile the cache TOTAL,
+//     not the person.
+// =============================================================================
+
+// Ops-only (NOT accounting): App Insights llm-emit-token-metric, bounded dimensions, capped at 100 values.

@@ -1,0 +1,25 @@
+{
+  "//": "Pattern B - Claude Code managed settings pointing at the APIM AI gateway.",
+  "//base": "ANTHROPIC_BASE_URL must serve the Anthropic Messages API (POST /v1/messages). Point it at the APIM /anthropic route that fronts Foundry Claude.",
+  "//auth": "Claude Code has no interactive Entra OAuth to a custom gateway. apiKeyHelper (07-apikeyhelper.sh) mints a per-user Entra token each refresh; Claude Code sends it in BOTH x-api-key AND Authorization: Bearer. The APIM policy validates Authorization, extracts oid, and strips both credential headers before the backend.",
+  "//pin": "Pin a current, patched Claude Code build. Treat the CLI version as part of the contract and re-test on upgrade (a build change could alter header behavior).",
+  "//bypass": "Deliver this via MDM/managed settings so ANTHROPIC_BASE_URL cannot be pointed back at a public Anthropic endpoint. Enforcement and attribution only hold if the gateway is non-bypassable (Foundry private endpoint + MI-only RBAC + egress block).",
+  "//models": "Set ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL to your Foundry Claude deployment names.",
+  "//placeholders": "Fill <APIM_NAME>, <GATEWAY_APP_ID>, <TENANT_ID>, and the three <CLAUDE_*_DEPLOYMENT> names.",
+
+  "apiKeyHelper": "/usr/local/bin/claude-gateway-token",
+
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://<APIM_NAME>.azure-api.net/anthropic",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "2700000",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "<CLAUDE_OPUS_DEPLOYMENT>",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "<CLAUDE_SONNET_DEPLOYMENT>",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "<CLAUDE_HAIKU_DEPLOYMENT>",
+
+    "//helper-input": "The apiKeyHelper reads these to request the correctly-scoped token. Use the /.default scope form to force a v2 token with the right audience (the gateway app, NOT ai.azure.com).",
+    "CLAUDE_GATEWAY_API_SCOPE": "api://<GATEWAY_APP_ID>/.default",
+    "CLAUDE_GATEWAY_TENANT_ID": "<TENANT_ID>"
+  },
+
+  "//alternative": "No-gateway fallback (loses central attribution): Claude Code native Foundry mode - CLAUDE_CODE_USE_FOUNDRY=1 with ANTHROPIC_FOUNDRY_RESOURCE=<FOUNDRY_RESOURCE_NAME> and Entra via DefaultAzureCredential. Use only when a gateway is not available; attribution then falls back to the Pattern A diagnostic logs."
+}

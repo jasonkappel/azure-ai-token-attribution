@@ -1,0 +1,9 @@
+{
+  "//": "Copy this file to config.json and fill in your values, then run query-helper.ps1.",
+  "//workspaceId": "Log Analytics workspace GUID (customerId), e.g. from: az monitor log-analytics workspace show --query customerId",
+  "workspaceId": "<LOG_ANALYTICS_WORKSPACE_ID>",
+  "//timeRangeHours": "Lookback window for both queries, in hours. 168 = 7 days.",
+  "timeRangeHours": 168,
+  "//rateCardCsv": "Path to the effective-dated rate card used to price tokens (see aoai-no-gateway/03-pricing-table.sample.csv). Never commit real contract prices.",
+  "rateCardCsv": "./rate-card.csv"
+}

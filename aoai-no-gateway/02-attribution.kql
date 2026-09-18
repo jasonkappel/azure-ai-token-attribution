@@ -1,0 +1,119 @@
+// =============================================================================
+// Pattern A - Azure OpenAI per-principal token attribution + cost (NO gateway)
+// -----------------------------------------------------------------------------
+// WHAT THIS DOES
+//   Produces one attributed row per Azure OpenAI call (who called, which model,
+//   how many prompt/completion/cached tokens), then prices it with a rate card
+//   and gives you coverage + reconciliation queries. Source of truth is the
+//   platform diagnostic log, not application self-report.
+//
+// PREREQUISITES
+//   - 01-enable-diagnostics.azcli has run; RequestResponse + AzureOpenAIRequestUsage
+//     are flowing into your Log Analytics workspace.
+//   - Run these in Log Analytics (Logs) against that workspace.
+//
+// IMPORTANT
+//   The field names below (callerObjectId, promptTokens in properties_s, and the
+//   CorrelationId == apim-request-id join) are PILOT-OBSERVED, not documented by
+//   Microsoft. Pin them and run 06-canary-schema-drift.kql to alert if they change.
+//
+// PLACEHOLDERS TO FILL
+//   The rate card in Q3 uses ILLUSTRATIVE list prices. Replace them with a real,
+//   effective-dated rate card (see 03-pricing-table.sample.csv).
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Q1. CORE: one attributed row per successful call
+//   - RequestResponse / event_s == "ShoeboxCallResult" is the attribution record.
+//   - There are TWO RequestResponse rows per call: one populated, one near-empty.
+//     Filter callerObjectId != "" to keep the populated one (avoids a 2x count).
+//   - callerObjectId = the Entra object id of the authenticated data-plane caller.
+//       * user / OBO token      -> the HUMAN's oid   (per-human)
+//       * SP / managed identity -> the WORKLOAD principal's oid (per-app) [VERIFY - see 05-*.ps1]
+//   - promptTokens / completionTokens are scalars in properties_s here.
+// -----------------------------------------------------------------------------
+let attributed =
+    AzureDiagnostics
+    | where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+    | where Category == "RequestResponse"
+    | where event_s == "ShoeboxCallResult"          // the call-result record (event_s is a top-level column)
+    | extend p = parse_json(properties_s)
+    | extend callerOid = tostring(p.callerObjectId)
+    | where isnotempty(callerOid)                    // drops the paired near-empty row (prevents 2x count)
+    | project TimeGenerated, CorrelationId, _ResourceId,
+              callerOid,
+              promptTokens = tolong(p.promptTokens),
+              completionTokens = tolong(p.completionTokens),
+              model       = tostring(p.modelName),
+              deployment  = tostring(p.modelDeploymentName);
+
+// -----------------------------------------------------------------------------
+// Q2. Add the cached-token subset from AzureOpenAIRequestUsage (joined on CorrelationId).
+//   - promptTokens[] / cachedTokens[] / generatedTokens[] are single-element arrays.
+//   - cachedTokens is a SUBSET of promptTokens (input). Do NOT add it on top of input.
+//   - This category has NO identity; it only enriches the token breakdown.
+// -----------------------------------------------------------------------------
+let usage =
+    AzureDiagnostics
+    | where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+    | where Category == "AzureOpenAIRequestUsage"
+    | extend p = parse_json(properties_s)
+    | project CorrelationId,
+              usagePrompt    = tolong(p.promptTokens[0]),
+              usageCached    = tolong(p.cachedTokens[0]),
+              usageGenerated = tolong(p.generatedTokens[0]);
+
+let calls =
+    attributed
+    | join kind=leftouter usage on CorrelationId
+    | extend cachedInput = coalesce(usageCached, 0L)
+    // billable (non-cached) input = total prompt tokens minus the cached subset
+    | extend billableInput = promptTokens - cachedInput
+    | project TimeGenerated, CorrelationId, callerOid, model, deployment,
+              promptTokens, cachedInput, billableInput, completionTokens;
+
+// -----------------------------------------------------------------------------
+// Q3. COST = join an effective-dated rate card (see 03-pricing-table.sample.csv).
+//   Rates below are ILLUSTRATIVE public-list placeholders per 1,000,000 tokens (USD).
+//   Replace with a maintained, effective-dated table. Label output as a LIST-PRICE
+//   ESTIMATE - it is not the invoice. Reconcile to Cost Management (Q5).
+//   Reasoning tokens: on reasoning models, verify whether they are already inside
+//   completionTokens before pricing them again. Do not double-count.
+// -----------------------------------------------------------------------------
+let rateCard = datatable(model:string, inputPerM:real, cachedInputPerM:real, outputPerM:real)
+[
+    "gpt-4.1-mini", 0.40, 0.10, 1.60,   // ILLUSTRATIVE - replace with real effective-dated rates
+    "gpt-5.6-sol",  1.25, 0.125, 10.00  // ILLUSTRATIVE
+];
+
+calls
+| join kind=leftouter rateCard on model
+| extend estCostUsd =
+        (billableInput  * inputPerM       / 1000000.0)
+      + (cachedInput    * cachedInputPerM  / 1000000.0)
+      + (completionTokens * outputPerM     / 1000000.0)
+| project TimeGenerated, callerOid, model, deployment,
+          promptTokens, cachedInput, completionTokens,
+          estCostUsd_ListPriceEstimate = round(estCostUsd, 6)
+| order by TimeGenerated desc
+
+// =============================================================================
+// Q4. COVERAGE (health, NOT a bill): attributed rows vs total inference rows.
+//     A gap means uninstrumented/unattributable volume - a suspense bucket owned
+//     by the platform team, NOT something to redistribute across users.
+// =============================================================================
+// AzureDiagnostics
+// | where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+// | where Category == "RequestResponse" and column_ifexists("event_s","") == "ShoeboxCallResult"
+// | extend p = parse_json(properties_s)
+// | summarize total = count(),
+//             attributed = countif(isnotempty(tostring(p.callerObjectId)))
+//           by bin(TimeGenerated, 1d), deployment = tostring(p.modelDeploymentName)
+// | extend coveragePct = round(100.0 * attributed / total, 1)
+
+// =============================================================================
+// Q5. RECONCILIATION grain = resource x deployment x day. Compare this estimate to
+//     Azure Cost Management / FOCUS export at the SAME grain. Keep the variance as a
+//     named residual; never smear it onto individuals. PTU deployments are billed by
+//     capacity-hour - exclude them from the per-caller dollar measure entirely.
+// =============================================================================

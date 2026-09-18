@@ -1,0 +1,118 @@
+<!--
+=============================================================================
+ Pattern B - APIM AI gateway policy: Claude Code (Entra user) -> Foundry Claude
+-----------------------------------------------------------------------------
+ WHAT THIS DOES
+   Validates the caller's own Entra token, rejects app-only tokens, strips the
+   user credential before the backend, stamps the caller oid for attribution,
+   enforces a per-user token quota, and calls Foundry Claude with APIM's managed
+   identity. Per-user prompt+completion attribution comes from APIM's native,
+   streaming-safe LLM logging joined to the stamped x-caller-oid (see
+   09-attribution.kql), NOT a response-body read (Claude Code streams via SSE, and
+   an outbound policy cannot reliably read a streamed body).
+
+ PREREQUISITES
+   - An APIM v2 tier (the Anthropic Messages llm-* policies need v2).
+   - The gateway app registration (02-*.ps1) and the wired backend (03-*.ps1).
+   - The API/product must be subscriptionRequired=false, and APIM should sit on a
+     private/internal network so the stripped-credential path is not publicly reachable.
+
+ PLACEHOLDERS TO FILL
+   <TENANT_ID>        Your Entra tenant id.
+   <GATEWAY_APP_ID>   The gateway app registration's appId (bare GUID). It appears
+                      in <audiences> twice on purpose: as the bare GUID and as
+                      api://<GUID>, because different token-mint paths stamp aud
+                      either way. You can also store these as APIM named values.
+
+ NOTE: inside APIM policy ATTRIBUTES, C# string literals must be XML-escaped as &quot;.
+=============================================================================
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- 1. Validate the caller's Entra token (present in Authorization). Audience = this gateway app. -->
+    <validate-azure-ad-token tenant-id="<TENANT_ID>"
+                             header-name="Authorization"
+                             output-token-variable-name="jwt">
+      <audiences>
+        <audience><GATEWAY_APP_ID></audience>
+        <audience>api://<GATEWAY_APP_ID></audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Claude.User</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+
+    <!-- 2. Extract identity + delegation signals. -->
+    <set-variable name="callerOid" value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;oid&quot;,&quot;&quot;))" />
+    <set-variable name="callerScp" value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;scp&quot;,&quot;&quot;))" />
+    <set-variable name="idtyp" value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;idtyp&quot;,&quot;&quot;))" />
+
+    <!-- 3. REJECT app-only tokens. Primary signal: scp is present only on DELEGATED (user) tokens
+            (idtyp is an optional claim, off by default, so scp is the reliable gate).
+            idtyp=app and empty oid are additional defense-in-depth rejections. -->
+    <choose>
+      <when condition="@(string.IsNullOrEmpty((string)context.Variables[&quot;callerScp&quot;]) || (string)context.Variables[&quot;idtyp&quot;] == &quot;app&quot; || string.IsNullOrEmpty((string)context.Variables[&quot;callerOid&quot;]))">
+        <return-response>
+          <set-status code="403" reason="Delegated user token required (app-only or unidentified caller rejected)" />
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- 4. STRIP both credential headers so the user credential never reaches the backend.
+            (The client sends the token in BOTH Authorization and x-api-key.) -->
+    <set-header name="x-api-key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+
+    <!-- 5. Stamp the caller identity so the native gateway log can carry it (configure the diagnostic
+            setting to log the x-caller-oid request header). This is the per-user attribution key. -->
+    <set-header name="x-caller-oid" exists-action="override">
+      <value>@((string)context.Variables["callerOid"])</value>
+    </set-header>
+
+    <!-- 6. Inject the Anthropic version header if the client did not send one.
+            Foundry Claude (Anthropic Messages) requires anthropic-version. -->
+    <set-header name="anthropic-version" exists-action="skip">
+      <value>2023-06-01</value>
+    </set-header>
+
+    <!-- 7. Per-user token QUOTA (prompt+completion; estimates for streaming; can overshoot). -->
+    <llm-token-limit counter-key="@((string)context.Variables[&quot;callerOid&quot;])"
+                     tokens-per-minute="50000"
+                     token-quota="10000000"
+                     token-quota-period="Monthly"
+                     estimate-prompt-tokens="true"
+                     remaining-tokens-header-name="x-remaining-tokens"
+                     tokens-consumed-header-name="x-tokens-consumed" />
+
+    <!-- 8. Ops-only metric (dashboards/alerts). NOT the ledger and NOT per-user (a per-oid dimension
+            caps at 100 unique values). Keep bounded dimensions only. -->
+    <llm-emit-token-metric namespace="genai-usage-ops">
+      <dimension name="Model" value="@(context.Request.MatchedParameters.GetValueOrDefault(&quot;model&quot;,&quot;&quot;))" />
+      <dimension name="ApiId" value="@(context.Api.Id)" />
+    </llm-emit-token-metric>
+
+    <!-- 9. Route to Foundry Claude; managed identity LAST sets the backend Authorization.
+            resource=https://ai.azure.com (NOT cognitiveservices.azure.com). MI needs the Foundry role. -->
+    <set-backend-service backend-id="foundry-claude" />
+    <authentication-managed-identity resource="https://ai.azure.com" />
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+    <!-- No response-body read here. Per-user prompt/completion tokens come from the native
+         ApiManagementGatewayLlmLog joined to x-caller-oid (09-attribution.kql). Streaming is safe
+         because APIM's own LLM logging is SSE-aware. Cache tokens are total-only (Foundry metrics). -->
+  </outbound>
+
+  <on-error>
+    <base />
+  </on-error>
+</policies>

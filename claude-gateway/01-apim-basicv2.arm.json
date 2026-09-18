@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "//": "Pattern B - Provision APIM on a v2 tier for the Claude AI gateway.",
+  "//why-arm": "The Anthropic Messages llm-* policies (llm-token-limit, ApiManagementGatewayLlmLog) only understand the Anthropic schema on a v2 tier. As of this writing the az CLI 'az apim create' does not accept the v2 SKU names, so provision via ARM with sku name 'Basicv2' and apiVersion 2023-09-01-preview. Standardv2 / Premiumv2 swap in for higher throughput or VNET.",
+  "//identity": "SystemAssigned identity is required: the policy authenticates to Foundry with this managed identity. The identity.principalId output feeds 03-wire-backend.ps1 (grant it Foundry User on the Foundry resource).",
+  "//deploy": "az deployment group create -g <RESOURCE_GROUP> --template-file 01-apim-basicv2.arm.json --parameters serviceName=<APIM_NAME> publisherEmail=<ADMIN_EMAIL> publisherName='<PUBLISHER_NAME>' location=<REGION>",
+  "parameters": {
+    "serviceName": {
+      "type": "string",
+      "metadata": { "description": "APIM service name (globally unique). Becomes <APIM_NAME>.azure-api.net." }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": { "description": "Azure region for the APIM instance." }
+    },
+    "publisherEmail": {
+      "type": "string",
+      "metadata": { "description": "Administrator email for the APIM instance (notifications)." }
+    },
+    "publisherName": {
+      "type": "string",
+      "defaultValue": "AI Platform Team",
+      "metadata": { "description": "Publisher / organization display name." }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[parameters('serviceName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basicv2",
+        "capacity": 1
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "publisherEmail": "[parameters('publisherEmail')]",
+        "publisherName": "[parameters('publisherName')]"
+      }
+    }
+  ],
+  "outputs": {
+    "apimName": {
+      "type": "string",
+      "value": "[parameters('serviceName')]"
+    },
+    "gatewayUrl": {
+      "type": "string",
+      "value": "[concat('https://', parameters('serviceName'), '.azure-api.net')]"
+    },
+    "principalId": {
+      "//": "The APIM system-assigned managed identity object id. Grant this Foundry User on the Foundry resource (see 03-wire-backend.ps1).",
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('serviceName')), '2023-09-01-preview', 'full').identity.principalId]"
+    }
+  }
+}
