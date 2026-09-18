@@ -43,9 +43,10 @@ if ($rateCsv -and -not [System.IO.Path]::IsPathRooted($rateCsv)) {
 $rates = @{}
 if ($rateCsv -and (Test-Path $rateCsv)) {
   Import-Csv $rateCsv | Where-Object { $_.model -and $_.model -notmatch '^\s*#' } | ForEach-Object {
+    $cachedRate = if ($_.PSObject.Properties['cached_input_per_1m'] -and $_.cached_input_per_1m) { [double]$_.cached_input_per_1m } else { 0 }
     $rates[$_.model] = @{
       input  = [double]$_.input_per_1m
-      cached = [double]($_.cached_input_per_1m ?? 0)
+      cached = $cachedRate
       output = [double]$_.output_per_1m
     }
   }
