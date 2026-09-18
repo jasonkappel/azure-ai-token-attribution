@@ -33,9 +33,10 @@ flowchart TD
   end
   subgraph created["Custom tables the toolkit creates (optional)"]
     AOAIENR["AoaiEnrichment_CL<br/>app context, xcheck tokens<br/>(07-bicep)"]
-    SPEND["AiSpendEnrichment_CL<br/>dept/app/user + all meters<br/>(portal bicep)"]
+    SPEND["AiSpendEnrichment_CL<br/>dept/app/user + all meters<br/>(portal bicep + write-spend-record.ps1)"]
   end
   RATE[("Rate card CSV<br/>you own")]
+  APP2["Your app / write-spend-record.ps1"] -->|"Logs Ingestion API"| SPEND
 
   RR -->|"CorrelationId"| DATA["query-helper.ps1<br/>+ lib/AiBilling.Metering.psm1"]
   USG -->|"CorrelationId join"| DATA
@@ -55,10 +56,22 @@ is absent, it falls back to the native `RequestResponse` (+ `AzureOpenAIRequestU
 
 ## The join key everything hangs on
 
-Every cross-table link in this toolkit is the same key: **`CorrelationId`**, which equals the
-**`apim-request-id`** response header the caller sees. That is how a token count in one row finds
-the identity or cache breakdown in another. (This equivalence is **pilot-observed, not contracted**
-by Microsoft — see `docs/05-operations-and-gotchas.md`. The canary guards it.)
+Every cross-table link in this toolkit is the same key: **`CorrelationId`**. What is *documented*
+versus *pilot-observed* differs by pattern — be precise with a reviewer:
+
+- **Pattern B (documented, first-party).** `ApiManagementGatewayLlmLog.CorrelationId` equals
+  `ApiManagementGatewayLogs.CorrelationId` — the LlmLog reference literally defines its
+  `CorrelationId` as the same field in `ApiManagementGatewayLogs`. So joining per-user tokens to
+  the stamped identity is a supported, documented join. **Caveat:** `ApiManagementGatewayLogs` does
+  **not** capture arbitrary request headers by default — the `x-caller-oid` header only appears if
+  the API's diagnostic setting is configured to log it. `claude-gateway/05-enable-diagnostics.ps1`
+  configures exactly that; if you skip it, the oid is absent.
+- **Pattern A (pilot-observed, not contracted).** That `RequestResponse` carries `callerObjectId`
+  and per-request token counts inside `properties_s`, and that its `CorrelationId` equals the
+  **`apim-request-id` response header** the caller sees, are **not** in any first-party schema.
+  They work today and are load-bearing, but Microsoft can change them — the canary
+  (`aoai-no-gateway/06-canary-schema-drift.kql`) guards them. See
+  `docs/05-operations-and-gotchas.md`.
 
 ```mermaid
 erDiagram
@@ -108,8 +121,20 @@ erDiagram
 
 `AiSpendEnrichment_CL` is a **standalone record per call** — the portal reads it directly, no join.
 It is how you get department → app → user and the full cache/thinking meters for both patterns.
-Create it with `portal/enrichment-table-dcr.bicep`; whatever emits records (your app, or an
-ingestion adapter over the Claude sample-agent capture) writes this shape:
+Its data path has **three shipped halves**, so you can prove it end to end:
+
+1. **Create** the table + DCE + DCR — `portal/enrichment-table-dcr.bicep`.
+2. **Write** records — `portal/write-spend-record.ps1` (a reference writer: send a JSON array, or
+   emit one demo record to prove the loop). In production your application emits one record per
+   call from its own governed context; this script is the reference pattern.
+3. **Read** — `portal/query-helper.ps1` prefers this table and flattens it into `data.json`.
+
+The rich dept/app/user view is **optional**: without this table the portal falls back to
+per-principal attribution from the native logs. It stays empty until something writes records — the
+reference writer exists so "wire the enrichment path" is a runnable step, not an unimplemented TODO.
+
+Records use this shape (the app emits it; department / app / cost-center come from a governed
+context, never caller input):
 
 ```mermaid
 erDiagram
@@ -131,15 +156,19 @@ erDiagram
   }
 ```
 
-**Two enrichment tables, two jobs — do not confuse them:**
+**Two enrichment tables, two jobs — the trust boundary is decisive, do not blur it:**
 
 | | `AoaiEnrichment_CL` (07-bicep) | `AiSpendEnrichment_CL` (portal bicep) |
 |---|---|---|
 | Purpose | Add **app context** (AppId / cost center) to the native Pattern A log | A **complete spend record** the portal reads directly |
-| How it's used | **JOINed** onto `RequestResponse` by `CorrelationId` | **Read standalone** (preferred portal source) |
-| Token columns | `xcheck_*` — cross-check only; the native log is authoritative | The authoritative per-record meters for that record |
+| How it's used | **JOINed** onto `RequestResponse` by `CorrelationId`; the native log stays authoritative for tokens/identity | **Read standalone**; it is authoritative for its own records |
+| Token columns | `xcheck_*` — **cross-check only**, never priced from | The authoritative per-record meters, priced by the portal |
 | Covers | Pattern A | Both patterns (aoai + gateway) |
 | Required? | Optional | Optional (portal falls back to native logs) |
+
+They are **never joined or unioned to each other** — one adds context to the native meter, the
+other *is* the meter for its records. Mixing them would double-count. Pick one enrichment strategy
+per deployment.
 
 ## The portal's `data.json` contract (generated, not a table)
 

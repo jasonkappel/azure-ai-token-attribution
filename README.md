@@ -64,7 +64,7 @@ AIBilling/
   aoai-no-gateway/      Pattern A: 9 files (diagnostics, KQL, rate card, enrichment, canary, DCR, Power BI)
   claude-gateway/       Pattern B: ARM, app registration, backend wiring, policy, diagnostics, client, sample agent, KQL
   portal/               index.html (left-nav, 4 views + drill-down), query-helper.ps1,
-                        enrichment-table-dcr.bicep, config.sample.json
+                        enrichment-table-dcr.bicep, write-spend-record.ps1, config.sample.json
   acceptance/           run-acceptance.ps1 - offline logic suite + gated live round trip
 ```
 
