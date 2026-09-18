@@ -67,7 +67,7 @@ policy that forces interactive MFA on that flow will break it on managed worksta
 
 ## 5. What the tooling itself costs
 
-This is a *cost* tool; be honest that standing it up is not free. None of these are toolkit
+This is a *cost* tool; standing it up is not free. None of these are toolkit
 fees — they are standard Azure charges you already own or newly incur. Check the Azure Pricing
 Calculator for current numbers in your region; the point here is *what* has a meter, not exact
 dollars.

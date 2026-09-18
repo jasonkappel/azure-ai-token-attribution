@@ -14,7 +14,7 @@
    per call from its OWN context; here we take a JSON array of records (or emit a
    single demo record) so you can prove the create -> write -> read loop end to end.
 
- THE HONEST RULES (enforced by convention, not by this script)
+ THE RULES (enforced by convention, not by this script)
    - department / app / cost-center come from the app's OWN governed context or a
      governed map keyed by oid/AppId - NEVER from anything the caller can type.
    - inputTokens is ALREADY-UNCACHED input for both families (Claude input_tokens;

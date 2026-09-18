@@ -156,7 +156,7 @@ preflight and coverage. It exits non-zero on any failure, so it drops into CI. B
 the portal import the same cost model (`lib/AiBilling.Metering.psm1`), so the test guards the exact
 math the portal ships. Details in `acceptance/README.md`.
 
-## The honest caveats
+## Caveats
 
 These come straight from the field runbooks. Read them before you put a number in front of
 finance.

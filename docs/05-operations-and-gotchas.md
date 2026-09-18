@@ -98,7 +98,7 @@ table without notice.
 - Per-user **cache** is not captured at the gateway on streaming — it reconciles at the resource
   total. Full per-call meters (cache-write 5m/1h, cache-read, thinking) come from the app-side /
   non-streaming capture or the enrichment table, not the streaming gateway log. The portal shows
-  "—" for meters not on the current path — that is honest, not a defect.
+  "—" for meters not on the current path — that is expected, not a defect.
 - If you build an ingestion adapter for the app-side capture, **do not UNION** it with the gateway
   log (both carry prompt+completion → double-count). Pick one source of record per call; if you
   merge, replace by `apim-request-id` and tag `usage_source`.

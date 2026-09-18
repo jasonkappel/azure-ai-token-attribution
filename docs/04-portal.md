@@ -18,7 +18,7 @@ Every view has a **date-range** control (7d / 14d / 30d / All) and **drill-down*
 department or user anywhere and the whole portal filters to it, with removable chips that compose
 (e.g. one department + one user). All aggregation is client-side, so filters recompute instantly.
 
-A persistent honest-framing banner explains how to read the numbers: tokens are measured, dollars
+A persistent framing banner explains how to read the numbers: tokens are measured, dollars
 are a list-price estimate, cache-write is a premium and cache-read a discount, and thinking /
 reasoning tokens are already inside output (shown for transparency, never added to cost).
 
