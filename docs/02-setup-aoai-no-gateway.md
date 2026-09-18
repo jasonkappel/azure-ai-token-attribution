@@ -4,6 +4,13 @@ This gets you per-principal token attribution and a list-price cost estimate for
 OpenAI, using only diagnostic logs, Log Analytics, and a rate card. No API Management, no
 change to the calling app for the core meter.
 
+## Before you begin
+
+Read `docs/00-prerequisites.md` first (workstation tools, Azure/Entra rights, and the run order).
+The two things people miss for Pattern A: you need **Log Analytics Reader on the workspace** (not
+just Reader on the model resource) to query the logs, and the model must use **Entra auth with
+keys off** — a shared-key call logs no principal, so there is nothing to attribute.
+
 ## Azure services you will use
 
 | Service | Why | Notes |
@@ -35,6 +42,11 @@ workspace**, not just Reader on the resource. Reader on the Azure OpenAI account
 the resource; it does not let you query its logs.
 
 ## One decision to make first
+
+> **⛔ Clear the pilot gate first.** Do not run Step 1 until you have worked through
+> `docs/06-pilot-decision-and-gate.md`. Step 1 turns on diagnostics that write employee-identifying
+> object ids into the workspace — that needs privacy/DPIA sign-off and locked RBAC **before** the
+> first row, not after.
 
 Enabling `RequestResponse` writes every interactive caller's Entra object id into the
 workspace. That is employee-identifying telemetry. Complete a privacy review or DPIA before
@@ -108,7 +120,8 @@ report security protects the report, not the source; restrict workspace RBAC sep
 3. Confirm which deployments are pay-as-you-go versus PTU, and exclude PTU from the
    per-caller dollar measure (PTU is billed by capacity-hour regardless of tokens).
 4. Reconcile one day of the estimate to Cost Management at resource x deployment x day, and
-   record the variance.
+   record the variance. Cost Management settles over hours to days — reconcile over a settled
+   period, not same-day.
 5. Complete the privacy or DPIA review, and lock workspace RBAC and retention.
 6. Enable the canary and the synthetic call.
 

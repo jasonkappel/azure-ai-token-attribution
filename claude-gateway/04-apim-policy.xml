@@ -12,7 +12,7 @@
    an outbound policy cannot reliably read a streamed body).
 
  PREREQUISITES
-   - An APIM v2 tier (the Anthropic Messages llm-* policies need v2).
+   - An APIM v2 tier (Anthropic Messages API support in APIM is v2-tier-only; the llm-* policies run on all tiers).
    - The gateway app registration (02-*.ps1) and the wired backend (03-*.ps1).
    - The API/product must be subscriptionRequired=false, and APIM should sit on a
      private/internal network so the stripped-credential path is not publicly reachable.

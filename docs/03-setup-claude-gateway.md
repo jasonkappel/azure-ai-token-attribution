@@ -10,7 +10,7 @@ is a third-party CLI you do not control.
 | Service | Why | Notes |
 |---|---|---|
 | Foundry resource with Claude deployed | The model behind the gateway | Billing is Azure Marketplace token-metered pay-as-you-go |
-| API Management, v2 tier (`Microsoft.ApiManagement`) | The gateway that validates, strips, stamps, and throttles | Must be v2 (Basic v2 / Standard v2 / Premium v2); the `llm-*` policies need it. Put it on a private or internal network for production |
+| API Management, v2 tier (`Microsoft.ApiManagement`) | The gateway that validates, strips, stamps, and throttles | Must be v2 (Basic v2 / Standard v2 / Premium v2) because **Anthropic Messages API support in APIM is v2-tier-only** — the `llm-*` policies run on all tiers, but the Anthropic schema needs v2. Put it on a private or internal network for production |
 | Entra ID app registration | The audience the gateway validates tokens against | Created without admin consent (pre-authorizes the Azure CLI client) |
 | Log Analytics workspace | Holds the gateway LLM log and the identity row | The attribution source of record |
 | Azure Monitor (diagnostic settings + APIM logger) | Captures `GatewayLlmLogs` + the `x-caller-oid` header | Configured by `05-enable-diagnostics.ps1` |
@@ -36,7 +36,24 @@ role to the APIM managed identity requires Owner or User Access Administrator on
 resource, which is a higher bar than the API Management Service Contributor role that covers
 the rest of the wiring.
 
+## Before you begin
+
+Read `docs/00-prerequisites.md` first. Two things trip people up here specifically:
+
+1. **The Claude model must already be deployed.** Anthropic Claude models in Foundry are Azure
+   Marketplace offerings — someone with Marketplace purchase rights has to enable the offer,
+   accept its terms, and deploy `claude-opus-*` / `claude-haiku-*` before the gateway has
+   anything to sit in front of. Billing is token-metered pay-as-you-go through Marketplace.
+2. **Silent auth must actually work in your tenant.** The client helper mints a token with no
+   prompt; if Conditional Access forces interactive MFA on that flow, or self-service app
+   registration is blocked, you need an admin's help — confirm that before step 2, not at step 5.
+
 ## One decision to make first
+
+> **⛔ Clear the pilot gate first.** Do not run Step 1 until you have worked through
+> `docs/06-pilot-decision-and-gate.md`. This pattern logs `x-caller-oid` (per-developer coding
+> intensity) and stands up billable APIM — both need sponsor approval, privacy/DPIA sign-off, and a
+> spending cap **before** you begin.
 
 The oid on every attribution record is per-developer coding intensity, which is more
 sensitive than generic model use. Treat it as worker monitoring: complete a privacy review or
@@ -136,6 +153,8 @@ streamed response splits usage across `message_start` (input + cache) and `messa
 Run `claude-gateway/09-attribution.kql` in the workspace. It joins the native LLM token log to
 the caller oid and gives per-user prompt and completion tokens, a list-price estimate, and the
 resource-level reconciliation. Per-user cache is not captured; that is by design on streaming.
+Reconciliation lags — Cost Management / Marketplace meters settle over hours to days, so compare
+over a settled period, not same-day.
 
 ### Expected results by capture path (so you do not think the toolkit is broken)
 

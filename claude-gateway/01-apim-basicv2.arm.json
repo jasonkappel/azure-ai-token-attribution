@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "//": "Pattern B - Provision APIM on a v2 tier for the Claude AI gateway.",
-  "//why-arm": "The Anthropic Messages llm-* policies (llm-token-limit, ApiManagementGatewayLlmLog) only understand the Anthropic schema on a v2 tier. As of this writing the az CLI 'az apim create' does not accept the v2 SKU names, so provision via ARM with sku name 'Basicv2' and apiVersion 2023-09-01-preview. Standardv2 / Premiumv2 swap in for higher throughput or VNET.",
+  "//why-arm": "Pattern B needs v2 because Anthropic Messages API support in APIM is v2-tier-only (the llm-token-limit / ApiManagementGatewayLlmLog policies themselves run on all tiers). As of this writing the az CLI 'az apim create' does not accept the v2 SKU names, so provision via ARM with sku name 'Basicv2' and apiVersion 2023-09-01-preview. Standardv2 / Premiumv2 swap in for higher throughput or VNET.",
   "//identity": "SystemAssigned identity is required: the policy authenticates to Foundry with this managed identity. The identity.principalId output feeds 03-wire-backend.ps1 (grant it Foundry User on the Foundry resource).",
   "//deploy": "az deployment group create -g <RESOURCE_GROUP> --template-file 01-apim-basicv2.arm.json --parameters serviceName=<APIM_NAME> publisherEmail=<ADMIN_EMAIL> publisherName='<PUBLISHER_NAME>' location=<REGION>",
   "parameters": {

@@ -58,13 +58,47 @@ are attributed and throttled even though Claude Code is a third-party CLI you do
 ```
 AIBilling/
   README.md  LICENSE  .gitignore
-  docs/                 how-it-works + one setup guide per pattern + portal
+  docs/                 00-prerequisites, 01-how-it-works, 02/03 setup per pattern, 04-portal,
+                        05-operations-and-gotchas, 06-pilot-decision-and-gate
   lib/                  AiBilling.Metering.psm1 - the shared cost model (one source of truth)
   aoai-no-gateway/      Pattern A: 9 files (diagnostics, KQL, rate card, enrichment, canary, DCR, Power BI)
   claude-gateway/       Pattern B: ARM, app registration, backend wiring, policy, diagnostics, client, sample agent, KQL
   portal/               index.html (left-nav, 4 views + drill-down), query-helper.ps1, config.sample.json
   acceptance/           run-acceptance.ps1 - offline logic suite + gated live round trip
 ```
+
+## Before you start
+
+Read **`docs/00-prerequisites.md`** first. It covers the tools on your machine (Azure CLI,
+PowerShell 7+, Python 3 to serve the portal), the Azure/Entra rights you need to begin, the
+one-time model enablement people forget (turn keys off for Pattern A; enable + deploy the Claude
+Marketplace model for Pattern B), the order to do things in, and — since this is a *cost* tool —
+what standing it up itself costs (Log Analytics ingestion; APIM v2 for Pattern B).
+
+Then **run the acceptance test offline** to start green before touching Azure:
+
+```
+./acceptance/run-acceptance.ps1     # no Azure; proves the accounting logic in ~1s
+```
+
+And skim **`docs/05-operations-and-gotchas.md`** — the "what am I not thinking about" list
+(privacy/DPIA, residency & retention, the cost of the logging itself, PTU exclusion, undocumented
+fields that will change, private networking, the security-review checklist, and teardown).
+
+## ⛔ Before you run any setup: the pilot gate
+
+**`docs/06-pilot-decision-and-gate.md`** is a blocking gate, not optional reading. The first
+diagnostic setting you enable starts writing **employee-identifying** telemetry, and Pattern B
+stands up **billable** infrastructure. That doc has two parts:
+
+- a **one-page sponsor decision brief** — what this enables (cost *visibility*), what it is not
+  (showback with a named residual, **not** an invoice-exact chargeback or a security
+  certification), what it costs, what is proven vs untested, and a scoped pilot approval request;
+- a **pre-pilot checklist** the implementer must clear **before enabling any live logging** —
+  including **employee-data approval before pilot logging** (not just before production), least
+  privilege, a spending cap, and a named teardown owner.
+
+Clear the gate first. Then pick a pattern below.
 
 ## Quickstart, Pattern A (Azure OpenAI, no gateway)
 
@@ -84,8 +118,10 @@ Full walkthrough: `docs/02-setup-aoai-no-gateway.md`.
 
 ## Quickstart, Pattern B (Claude via gateway)
 
-Services and the exact RBAC (the backend-role grant needs Owner or User Access Administrator
-on the Foundry resource) are in `docs/03-setup-claude-gateway.md`.
+Prerequisites (`docs/00-prerequisites.md`): the Claude model must already be enabled and deployed
+from Azure Marketplace, and silent token auth must work in your tenant. Services and the exact
+RBAC (the backend-role grant needs Owner or User Access Administrator on the Foundry resource) are
+in `docs/03-setup-claude-gateway.md`.
 
 1. Provision APIM v2: `az deployment group create -g <RESOURCE_GROUP> --template-file claude-gateway/01-apim-basicv2.arm.json --parameters serviceName=<APIM_NAME> publisherEmail=<ADMIN_EMAIL>`. Note the `principalId` output.
 2. Create the gateway app registration (no admin consent): `claude-gateway/02-gateway-app-registration.ps1`.
@@ -145,8 +181,9 @@ finance.
 - Enforcement needs a gateway on a non-bypassable path. Pattern A does not enforce anything.
   Pattern B's quota is a guardrail that estimates for streaming and can overshoot, and it only
   holds if the gateway sits on a mandatory path (private network, MI-only backend, egress block).
-- APIM v2 is required for the Anthropic llm-* policies. The `llm-token-limit` and native LLM
-  logging understand the Anthropic Messages schema only on a v2 tier.
+- APIM v2 is required because **Anthropic Messages API support in APIM is v2-tier-only**. The
+  `llm-token-limit` and native LLM logging policies themselves run on all tiers, but the Anthropic
+  schema (the `/v1/messages` shape this gateway proxies) is only understood on a v2 tier.
 - Identity in the logs is worker-monitoring telemetry. `callerObjectId` and `x-caller-oid` are
   employee-identifying, and coding-tool usage is more sensitive still. Govern it: complete a
   privacy review or DPIA, restrict workspace RBAC, pseudonymize the id in reporting, set
