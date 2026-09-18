@@ -5,5 +5,7 @@
   "//timeRangeHours": "Lookback window for both queries, in hours. 168 = 7 days.",
   "timeRangeHours": 168,
   "//rateCardCsv": "Path to the effective-dated rate card used to price tokens (see aoai-no-gateway/03-pricing-table.sample.csv). Never commit real contract prices.",
-  "rateCardCsv": "./rate-card.csv"
+  "rateCardCsv": "./rate-card.csv",
+  "//enrichmentTable": "OPTIONAL. Custom-table name the portal prefers for department/app/user + all meters. Defaults to AiSpendEnrichment_CL. Remove or leave as-is if you have not wired the enrichment pipeline; the portal falls back to the platform + gateway logs.",
+  "enrichmentTable": "AiSpendEnrichment_CL"
 }

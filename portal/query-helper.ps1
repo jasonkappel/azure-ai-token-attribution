@@ -3,18 +3,19 @@
  Portal - query-helper: build portal/data.json from live Log Analytics data
 -----------------------------------------------------------------------------
  WHAT THIS DOES
-   Reads config.json, runs the Pattern A (Azure OpenAI, no gateway) and Pattern B
-   (Claude via gateway) attribution queries against your Log Analytics workspace,
-   prices each row with your rate card, and writes portal/data.json. The portal
-   (index.html) renders whatever is present; a pattern you have not wired up simply
-   returns no rows and its section stays empty.
+   Reads config.json, builds a per-record dataset for the portal and writes portal/data.json.
+   It prefers the ENRICHMENT custom table (department / app / user + all token meters); if that
+   table is not wired, it falls back to the platform diagnostic log (Pattern A) and the gateway
+   LLM log (Pattern B), attributing per principal (no dept/app/user). Costs come from the shared
+   metering module so the portal and the acceptance test price identically.
 
  PREREQUISITES
    - Azure CLI signed in (`az login`) with read access to the workspace.
-   - config.json exists (copy config.sample.json). Every value you supply:
-       workspaceId    -> the Log Analytics workspace GUID (customerId).
-       timeRangeHours -> lookback window in hours (e.g. 168 = 7 days).
-       rateCardCsv    -> path to your effective-dated rate card CSV.
+   - config.json exists (copy config.sample.json). Values you supply:
+       workspaceId     -> the Log Analytics workspace GUID (customerId).
+       timeRangeHours  -> lookback window in hours (e.g. 168 = 7 days).
+       rateCardCsv     -> path to your effective-dated rate card CSV.
+       enrichmentTable -> (optional) custom-table name; defaults to AiSpendEnrichment_CL.
    - The rate card CSV columns match aoai-no-gateway/03-pricing-table.sample.csv:
        model,deployment_type,region,currency,input_per_1m,cached_input_per_1m,output_per_1m,...
    - data.json is git-ignored on purpose. It holds live identity data; never commit it.
@@ -65,34 +66,78 @@ function Invoke-Kql([string]$query) {
   finally { Remove-Item $tmp -Force }
 }
 
-# Thin row-adapters over the shared cost model, so the portal and the acceptance test price
-# identically. Defensive field reads keep them null-safe on rows that lack the optional meters.
-function Get-Field($r, $n) { if ($r.PSObject.Properties[$n] -and $r.$n) { return [long]$r.$n } else { return 0 } }
-function Price-Aoai($r) {
-  return Get-AoaiCost -Rates $rates -Model $r.model `
-    -PromptTokens (Get-Field $r 'promptTokens') -CachedTokens (Get-Field $r 'cachedInput') `
-    -CompletionTokens (Get-Field $r 'completionTokens')
+# Thin field reader used by the pricing calls, null-safe on rows that lack optional meters or that
+# carry a non-numeric placeholder (e.g. "None") from a mixed-vintage table.
+function Get-Field($r, $n) {
+  if (-not ($r.PSObject.Properties[$n])) { return [long]0 }
+  $v = $r.$n
+  if ($null -eq $v) { return [long]0 }
+  $out = [long]0
+  if ([long]::TryParse([string]$v, [ref]$out)) { return $out } else { return [long]0 }
 }
-function Price-Claude($r) {
-  return Get-ClaudeCost -Rates $rates -Model $r.model `
-    -InputTokens (Get-Field $r 'promptTokens') -OutputTokens (Get-Field $r 'completionTokens') `
-    -CacheWrite5m (Get-Field $r 'cacheWrite5m') -CacheWrite1h (Get-Field $r 'cacheWrite1h') `
-    -CacheRead (Get-Field $r 'cacheRead') -CacheCreationTotal (Get-Field $r 'cacheCreation')
-}
-# costBasis labels the fidelity of each row's estimate so the portal never shows a confident dollar
-# that silently omitted cache. "full" = cache/thinking meters present; "p+c-only" = prompt+completion
-# only (the streaming gateway path); "unpriced" = no rate row for the model.
-function Get-ClaudeBasis($r, $price) {
-  if ($null -eq $price) { return "unpriced" }
-  $hasCache = ($r.PSObject.Properties['cacheWrite5m'] -and $r.cacheWrite5m) -or `
-              ($r.PSObject.Properties['cacheWrite1h'] -and $r.cacheWrite1h) -or `
-              ($r.PSObject.Properties['cacheRead'] -and $r.cacheRead) -or `
-              ($r.PSObject.Properties['cacheCreation'] -and $r.cacheCreation)
-  if ($hasCache) { "full" } else { "p+c-only" }
+# =============================================================================
+#  The portal is a per-record view (Overview / Azure OpenAI / Claude / By user, with
+#  department -> app -> user drill-down). It is driven by ONE records[] array. We build it
+#  from the ENRICHMENT table if it is wired (full dept/app/user + all meters), else we fall
+#  back to the platform diagnostic log + gateway LLM log (per-principal; dept/app/user unknown).
+# =============================================================================
+$enrichTable = if ($cfg.PSObject.Properties['enrichmentTable'] -and $cfg.enrichmentTable) { [string]$cfg.enrichmentTable } else { 'AiSpendEnrichment_CL' }
+
+# Price one ENRICHMENT record. The enrichment table stores input in the ALREADY-UNCACHED convention
+# for both families, so AOAI is priced by reconstructing the inclusive prompt (uncached + cached-read).
+function Price-Enrichment($r) {
+  $inp = Get-Field $r 'inputTokens'; $out = Get-Field $r 'outputTokens'
+  $cw  = Get-Field $r 'cacheWriteTokens'; $cr = Get-Field $r 'cacheReadTokens'
+  if ($r.pipeline -eq 'gateway') {
+    return Get-ClaudeCost -Rates $rates -Model $r.model -InputTokens $inp -OutputTokens $out -CacheCreationTotal $cw -CacheRead $cr
+  } else {
+    return Get-AoaiCost -Rates $rates -Model $r.model -PromptTokens ($inp + $cr) -CachedTokens $cr -CompletionTokens $out
+  }
 }
 
-# ---- Pattern A: Azure OpenAI per caller x model x deployment (with cached subset). ----
-$aoaiKql = @"
+$records = New-Object System.Collections.Generic.List[object]
+$source = $null; $queryOk = $true
+
+# ---- Primary: the enrichment custom table (per record, all dimensions + all meters). ----
+Write-Host "Querying enrichment table ($enrichTable)..."
+$enrichKql = @"
+$enrichTable
+| where TimeGenerated > ago(${hours}h)
+| project TimeGenerated, oid, userName, department, app, pipeline, model,
+          inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, thinkingTokens
+| take 20000
+"@
+$enrichRes = Invoke-Kql $enrichKql
+if ($enrichRes.ok -and $enrichRes.rows.Count -gt 0) {
+  $source = 'enrichment'
+  foreach ($r in $enrichRes.rows) {
+    $pipeline = if ($r.pipeline -eq 'gateway') { 'gateway' } else { 'aoai' }
+    $price = Price-Enrichment $r
+    $iv = if ($pipeline -eq 'gateway') {
+      Test-UsageIntegrity -Family 'claude' -OutputTokens (Get-Field $r 'outputTokens') -ThinkingTokens (Get-Field $r 'thinkingTokens')
+    } else {
+      Test-UsageIntegrity -Family 'aoai' -PromptTokens ((Get-Field $r 'inputTokens') + (Get-Field $r 'cacheReadTokens')) -CachedTokens (Get-Field $r 'cacheReadTokens')
+    }
+    if ($iv.Count) { Write-Warning ("integrity oid=$($r.oid) model=$($r.model): " + ($iv -join '; ')) }
+    # Per family: AOAI has no per-user cache-write/thinking on this store -> null (renders n/a/dash).
+    $isGw = ($pipeline -eq 'gateway')
+    $records.Add([ordered]@{
+      ts = $r.TimeGenerated; oid = $r.oid; user = $r.userName; department = $r.department; app = $r.app
+      pipeline = $pipeline; model = $r.model
+      input = [long](Get-Field $r 'inputTokens'); output = [long](Get-Field $r 'outputTokens')
+      cacheWrite = if ($isGw) { [long](Get-Field $r 'cacheWriteTokens') } else { $null }
+      cacheRead  = [long](Get-Field $r 'cacheReadTokens')
+      thinking   = if ($isGw) { [long](Get-Field $r 'thinkingTokens') } else { $null }
+      cost = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
+      costBasis = if ($null -eq $price) { 'unpriced' } elseif ($isGw) { 'full' } else { 'full' }
+    })
+  }
+} else {
+  # ---- Fallback: platform diagnostic log (Pattern A) + gateway LLM log (Pattern B), per call. ----
+  $source = 'platform-log'
+  Write-Host "Enrichment table not wired/empty - falling back to platform + gateway logs (per-principal, no dept/app/user)."
+
+  $aoaiKql = @"
 let usage = AzureDiagnostics
     | where TimeGenerated > ago(${hours}h)
     | where ResourceProvider == 'MICROSOFT.COGNITIVESERVICES'
@@ -110,13 +155,28 @@ AzureDiagnostics
          promptTokens = tolong(p.promptTokens), completionTokens = tolong(p.completionTokens)
 | join kind=leftouter usage on CorrelationId
 | extend cachedInput = coalesce(usageCached, long(0))
-| summarize calls = count(), promptTokens = sum(promptTokens),
-            completionTokens = sum(completionTokens), cachedInput = sum(cachedInput)
-          by oid, model, deployment
+| project TimeGenerated, oid, model, deployment, promptTokens, completionTokens, cachedInput
+| take 5000
 "@
+  Write-Host "Querying Azure OpenAI platform log (Pattern A)..."
+  $aoaiRes = Invoke-Kql $aoaiKql
+  if (-not $aoaiRes.ok) { $queryOk = $false }
+  foreach ($r in $aoaiRes.rows) {
+    $prompt = [long](Get-Field $r 'promptTokens'); $cached = [long](Get-Field $r 'cachedInput'); $comp = [long](Get-Field $r 'completionTokens')
+    $price = Get-AoaiCost -Rates $rates -Model $r.model -PromptTokens $prompt -CachedTokens $cached -CompletionTokens $comp
+    $iv = Test-UsageIntegrity -Family 'aoai' -PromptTokens $prompt -CachedTokens $cached
+    if ($iv.Count) { Write-Warning ("AOAI integrity oid=$($r.oid) model=$($r.model): " + ($iv -join '; ')) }
+    $records.Add([ordered]@{
+      ts = $r.TimeGenerated; oid = $r.oid; user = $null
+      department = '(unattributed)'; app = $r.deployment; pipeline = 'aoai'; model = $r.model
+      input = [Math]::Max($prompt - $cached, 0); output = $comp
+      cacheWrite = $null; cacheRead = $cached; thinking = $null
+      cost = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
+      costBasis = if ($null -eq $price) { 'unpriced' } else { 'full' }
+    })
+  }
 
-# ---- Pattern B: Claude per caller x model (prompt+completion; cache is total-only). ----
-$claudeKql = @"
+  $claudeKql = @"
 let idByCorrelation = ApiManagementGatewayLogs
     | where TimeGenerated > ago(${hours}h)
     | where isnotempty(CorrelationId)
@@ -125,59 +185,37 @@ let idByCorrelation = ApiManagementGatewayLogs
     | project CorrelationId, oid;
 ApiManagementGatewayLlmLog
 | where TimeGenerated > ago(${hours}h)
-| project CorrelationId, model = tostring(DeploymentName),
+| project TimeGenerated, CorrelationId, model = tostring(DeploymentName),
           promptTokens = tolong(PromptTokens), completionTokens = tolong(CompletionTokens)
 | join kind=leftouter idByCorrelation on CorrelationId
-| summarize calls = count(), promptTokens = sum(promptTokens), completionTokens = sum(completionTokens)
-          by oid = coalesce(oid, 'unattributed'), model
+| project TimeGenerated, oid = coalesce(oid, 'unattributed'), model, promptTokens, completionTokens
+| take 5000
 "@
-
-Write-Host "Querying Azure OpenAI (Pattern A)..."
-$aoaiRes = Invoke-Kql $aoaiKql
-$aoaiRows = @($aoaiRes.rows | ForEach-Object {
-  $price = Price-Aoai $_
-  # Wire the integrity gates into the pipeline so they are not decorative: a row whose meters
-  # violate an invariant (cached > prompt) is surfaced, not silently priced.
-  $iv = Test-UsageIntegrity -Family 'aoai' -PromptTokens (Get-Field $_ 'promptTokens') -CachedTokens (Get-Field $_ 'cachedInput')
-  if ($iv.Count) { Write-Warning ("AOAI integrity oid=$($_.oid) model=$($_.model): " + ($iv -join '; ')) }
-  [pscustomobject]@{
-    oid = $_.oid; model = $_.model; deployment = $_.deployment
-    calls = [int]$_.calls; promptTokens = [long]$_.promptTokens
-    completionTokens = [long]$_.completionTokens; cachedInput = [long]$_.cachedInput
-    # null (UNPRICED) stays null so the portal renders it as an em-dash, never a false $0.
-    estCostUsd = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
-    costBasis  = if ($null -eq $price) { "unpriced" } else { "full" }   # AOAI cached is captured in the log
-    integrity  = if ($iv.Count) { ($iv -join '; ') } else { "ok" }
+  Write-Host "Querying Claude gateway LLM log (Pattern B)..."
+  $claudeRes = Invoke-Kql $claudeKql
+  # A missing gateway table is expected when Pattern B is not wired - do NOT flip queryOk for that.
+  foreach ($r in $claudeRes.rows) {
+    $prompt = [long](Get-Field $r 'promptTokens'); $comp = [long](Get-Field $r 'completionTokens')
+    $price = Get-ClaudeCost -Rates $rates -Model $r.model -InputTokens $prompt -OutputTokens $comp
+    $records.Add([ordered]@{
+      ts = $r.TimeGenerated; oid = $r.oid; user = $null
+      department = '(unattributed)'; app = $r.model; pipeline = 'gateway'; model = $r.model
+      input = $prompt; output = $comp
+      cacheWrite = $null; cacheRead = $null; thinking = $null   # per-user cache not captured at the gateway on streaming
+      cost = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
+      costBasis = if ($null -eq $price) { 'unpriced' } else { 'p+c-only' }
+    })
   }
-})
-
-Write-Host "Querying Claude gateway (Pattern B)..."
-$claudeRes = Invoke-Kql $claudeKql
-$claudeRows = @($claudeRes.rows | ForEach-Object {
-  $price = Price-Claude $_
-  $iv = Test-UsageIntegrity -Family 'claude' -OutputTokens (Get-Field $_ 'completionTokens') `
-        -ThinkingTokens (Get-Field $_ 'thinking') -CacheCreationTotal (Get-Field $_ 'cacheCreation') `
-        -CacheWrite5m (Get-Field $_ 'cacheWrite5m') -CacheWrite1h (Get-Field $_ 'cacheWrite1h')
-  if ($iv.Count) { Write-Warning ("Claude integrity oid=$($_.oid) model=$($_.model): " + ($iv -join '; ')) }
-  [pscustomobject]@{
-    oid = $_.oid; model = $_.model
-    calls = [int]$_.calls; promptTokens = [long]$_.promptTokens
-    completionTokens = [long]$_.completionTokens
-    estCostUsd = if ($null -eq $price) { $null } else { [Math]::Round($price, 6) }
-    costBasis  = Get-ClaudeBasis $_ $price   # "full" | "p+c-only" (streaming) | "unpriced"
-    integrity  = if ($iv.Count) { ($iv -join '; ') } else { "ok" }
-  }
-})
+}
 
 $data = [ordered]@{
   generatedAt    = (Get-Date).ToUniversalTime().ToString("o")
   timeRangeHours = $hours
-  # queryOk flags let the portal distinguish a FAILED query from a genuinely empty result
-  # (a failure must not read as zero spend).
-  aoai   = @{ rows = $aoaiRows;   queryOk = $aoaiRes.ok }
-  claude = @{ rows = $claudeRows; queryOk = $claudeRes.ok }
+  source         = $source          # "enrichment" | "platform-log"
+  queryOk        = $queryOk         # false => a query FAILED (portal shows a failure banner, not $0)
+  records        = $records
 }
 
 $data | ConvertTo-Json -Depth 8 | Set-Content -Path $OutPath -Encoding utf8
-Write-Host "Wrote $OutPath  (aoai rows=$($aoaiRows.Count), claude rows=$($claudeRows.Count))"
-Write-Host "Open portal/index.html to view. If both patterns returned 0 rows, the portal shows 'Not configured'."
+Write-Host "Wrote $OutPath  (source=$source, records=$($records.Count), queryOk=$queryOk)"
+Write-Host "Open portal/index.html to view. If there are 0 records, the portal shows 'Not configured'."

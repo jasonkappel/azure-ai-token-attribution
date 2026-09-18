@@ -1,32 +1,44 @@
 # The portal
 
-`portal/index.html` is a single self-contained page that shows both billing views and a
-combined total on one screen. It has no external dependencies (no CDN scripts, styles, or
-fonts) and it is live-only: it reads `portal/data.json` and renders "Not configured" until
-you generate that file. It ships with no sample data on purpose, so nothing you see is ever
-fabricated.
+`portal/index.html` is a single self-contained page with a left navigation pane and four views.
+It has no external dependencies (no CDN scripts, styles, or fonts) and it is live-only: it reads
+`portal/data.json` and renders "Not configured" until you generate that file. It ships with no
+sample data on purpose, so nothing you see is ever fabricated.
 
-## The three views
+## The four views (left nav)
 
-- Azure OpenAI, no gateway: per-principal token usage and list-price cost from Pattern A.
-- Claude, via gateway: per-user prompt and completion tokens and list-price cost from
-  Pattern B.
-- Combined total: cost, tokens, calls, and distinct principals across both.
+- **Overview**: KPIs (total est. spend, departments, applications, users), spend by department,
+  by model, by user, by pipeline, a department → application → user table, and a token-meters
+  table. This is the headline screen.
+- **Azure OpenAI**: the same breakdown scoped to the no-gateway (Pattern A) pipeline.
+- **Claude (gateway)**: the same breakdown scoped to the gateway (Pattern B) pipeline.
+- **By user**: spend per human, with the departments and apps each user touched.
 
-Each view shows KPI cards, an estimated-cost-by-model bar chart, a per-principal table, and a
-"token meters by model" table (input, output, cache-write, cache-read, thinking). The combined
-total sits at the top so the headline number is the first thing you see. A persistent
-honest-framing banner explains how to read the numbers: tokens are measured, dollars are a
-list-price estimate, cache-write is a premium and cache-read a discount, and thinking/reasoning
-tokens are already inside output (shown for transparency, never added to cost).
+Every view has a **date-range** control (7d / 14d / 30d / All) and **drill-down**: click a
+department or user anywhere and the whole portal filters to it, with removable chips that compose
+(e.g. one department + one user). All aggregation is client-side, so filters recompute instantly.
 
-The meter table renders "—" for any meter a pattern does not carry, so a blank cell never reads
-as a captured zero. Azure OpenAI shows input (= prompt − cached), output, and cache-read (the
-automatic cached subset); cache-write (billed on GPT-5.6+) and per-user reasoning are not on this
-query path, so they render "—". Claude shows input and output per user;
-its cache-write (5m/1h) and cache-read columns populate only when the Claude source is the
-app-side / non-streaming capture — on the streaming gateway path they stay "—" and cache
-reconciles at the resource total.
+A persistent honest-framing banner explains how to read the numbers: tokens are measured, dollars
+are a list-price estimate, cache-write is a premium and cache-read a discount, and thinking /
+reasoning tokens are already inside output (shown for transparency, never added to cost).
+
+The token-meters table renders `n/a` when a meter does not exist for a pattern and `—` when it
+exists but was not captured on this query path — so a blank cell never reads as a captured zero.
+Azure OpenAI shows input (= prompt − cached), output, and cache-read; cache-write (billed on
+GPT-5.6+) and per-user reasoning are not on the platform-log path, so they render `—`. Claude
+shows input, output, and — when the source is the enrichment table or the app-side / non-streaming
+capture — cache-write, cache-read, and thinking; on the streaming gateway path per-user cache
+stays `—` and reconciles at the resource total.
+
+## Where department / app / user come from
+
+The portal prefers the **enrichment custom table** (`AiSpendEnrichment_CL`), which carries
+department / app / user and every token meter per call. When that table is not wired,
+`query-helper.ps1` falls back to the platform diagnostic log (Pattern A) and gateway LLM log
+(Pattern B) and attributes **per principal** — department / app / user then read "(unattributed)"
+and the record's principal oid stands in for the user. The sidebar's data-source note tells you
+which mode produced the current view. A failed query shows a red banner (never a silent $0).
+
 
 ## What you supply
 

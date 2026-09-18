@@ -62,7 +62,7 @@ AIBilling/
   lib/                  AiBilling.Metering.psm1 - the shared cost model (one source of truth)
   aoai-no-gateway/      Pattern A: 9 files (diagnostics, KQL, rate card, enrichment, canary, DCR, Power BI)
   claude-gateway/       Pattern B: ARM, app registration, backend wiring, policy, diagnostics, client, sample agent, KQL
-  portal/               index.html (3 views + combined), query-helper.ps1, config.sample.json
+  portal/               index.html (left-nav, 4 views + drill-down), query-helper.ps1, config.sample.json
   acceptance/           run-acceptance.ps1 - offline logic suite + gated live round trip
 ```
 
@@ -99,11 +99,12 @@ Full walkthrough: `docs/03-setup-claude-gateway.md`.
 
 ## The portal
 
-`portal/index.html` is a single self-contained page with three views: Azure OpenAI (no
-gateway), Claude (via gateway), and a combined total. Each view adds a "token meters by model"
-table (input / output / cache-write / cache-read / thinking) and a persistent honest-framing
-banner. It is live-only. It reads `portal/data.json` and shows "Not configured" until you
-generate it, and it ships with no sample data. Fill `config.sample.json` (save as
+`portal/index.html` is a single self-contained page with a left navigation pane and four views:
+Overview, Azure OpenAI (no gateway), Claude (via gateway), and By user — each with a date-range
+control and department/user drill-down. It is live-only: it reads `portal/data.json` and shows
+"Not configured" until you generate it, and it ships with no sample data. It prefers the
+enrichment custom table (department / app / user + all meters) and falls back to the platform +
+gateway logs (per principal) when enrichment is not wired. Fill `config.sample.json` (save as
 `config.json`), run `query-helper.ps1`, and reload. Details in `docs/04-portal.md`.
 
 ## Prove it works: the acceptance test

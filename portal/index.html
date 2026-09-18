@@ -1,328 +1,210 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Azure AI Spend Attribution — Portal</title>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Spend Attribution — Portal</title>
 <!--
-  Live-only portal. It reads ./data.json (written by query-helper.ps1) and renders three
-  views: Azure OpenAI (no gateway), Claude (via gateway), and a combined total. There is
-  NO bundled sample data. If data.json is missing or empty, it shows "Not configured".
-  Self-contained: no external scripts, styles, or fonts.
-  Tip: some browsers block fetch() over file://. If you see "Not configured" after wiring,
-  serve the folder locally (e.g. `python -m http.server` in portal/) and open via http://.
+  Live-only FinOps portal. Reads ./data.json (written by query-helper.ps1) and renders a left-nav
+  with four views: Overview, Azure OpenAI, Claude (gateway), and By user. There is NO bundled sample
+  data; if data.json is missing/empty it shows "Not configured", and if a query FAILED it shows a
+  failure banner (a failed query is never rendered as zero spend). Self-contained: no external assets.
+  Tip: some browsers block fetch() over file://. If you see "Not configured" after wiring, serve the
+  folder (e.g. `python -m http.server` in portal/) and open via http://.
 -->
 <style>
-:root{
-  --ink:#1b2637; --muted:#5c6b82; --line:#e3e9f2; --card:#ffffff; --bg:#f4f7fb;
-  --accent:#3b6fd4; --aoai:#5B8FF0; --claude:#6DBFA9; --combined:#8A79C7;
-}
-*{box-sizing:border-box}
-body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:28px}
-.wrap{max-width:1180px;margin:0 auto}
-h1{font-size:24px;margin:0 0 4px}
-.sub{color:var(--muted);font-size:14px;margin-bottom:6px}
-.status{display:inline-block;font-weight:600;font-size:12px;padding:3px 10px;border-radius:20px;margin-bottom:20px}
-.status.live{background:#e8f5ee;color:#1b7a4b}
-.status.blank{background:#fdeee3;color:#96591c}
-section{margin-bottom:26px}
-.sechead{display:flex;align-items:center;gap:10px;margin:0 0 12px}
-.dot{width:12px;height:12px;border-radius:3px}
-.sechead h2{font-size:17px;margin:0;font-weight:600}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+:root{--ink:#1b2637;--muted:#5c6b82;--line:#e3e9f2;--card:#fff;--bg:#f4f7fb;--nav:#152238;--navmut:#9fb0cc;--aoai:#5B8FF0;--claude:#8A6FC7;--accent:#3B6FD4;--user:#2AA98C;}
+*{box-sizing:border-box}body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+.nav{background:var(--nav);color:#fff;padding:22px 0;position:sticky;top:0;height:100vh}
+.brand{padding:0 22px 18px;font-weight:700;font-size:16px;line-height:1.3;border-bottom:1px solid #2a3a55;margin-bottom:12px}
+.brand small{display:block;color:var(--navmut);font-weight:400;font-size:12px;margin-top:4px}
+.navitem{display:flex;align-items:center;gap:10px;padding:11px 22px;color:var(--navmut);font-size:14px;font-weight:600;cursor:pointer;border-left:3px solid transparent}
+.navitem:hover{background:#1c2c48;color:#fff}.navitem.active{background:#1c2c48;color:#fff;border-left-color:var(--aoai)}
+.navitem .dot{width:8px;height:8px;border-radius:50%}
+.navsec{padding:14px 22px 6px;color:#657da0;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.src{padding:16px 22px;color:#7d90b0;font-size:11px;line-height:1.5;border-top:1px solid #2a3a55;margin-top:12px}
+.main{padding:26px 32px}h1{font-size:23px;margin:0 0 4px}.sub{color:var(--muted);font-size:14px;margin-bottom:14px}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.live{display:inline-flex;align-items:center;gap:6px;background:#e8f5ee;color:#1b7a4b;font-weight:600;font-size:12px;padding:3px 10px;border-radius:20px}
+.seg{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:#fff;padding:7px 13px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.seg button.on{background:var(--accent);color:#fff}
+.chip{display:inline-flex;align-items:center;gap:8px;background:#eaf1fd;color:#1e4fa3;border:1px solid #cfe0fb;border-radius:20px;padding:5px 12px;font-size:13px;font-weight:600}
+.chip.u{background:#e6f6f1;color:#177a63;border-color:#bfe6da}
+.chip span{cursor:pointer;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
-.kpi .n{font-size:26px;font-weight:700}
-.kpi .l{color:var(--muted);font-size:13px;margin-top:2px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
-.card h3{font-size:14px;margin:0 0 14px;font-weight:600}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
-th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
-.num{text-align:right;font-variant-numeric:tabular-nums}
-.mono{font-family:'Cascadia Code',Consolas,monospace;font-size:12px;color:var(--muted)}
-.pill{padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
-.barrow{display:grid;grid-template-columns:150px 1fr 100px;align-items:center;gap:10px;margin-bottom:10px;font-size:13px}
-.bartrack{background:#eef2f8;border-radius:8px;height:22px;overflow:hidden}
-.barfill{height:100%;border-radius:8px}
+.kpi .n{font-size:24px;font-weight:700}.kpi .l{color:var(--muted);font-size:13px;margin-top:2px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+.card h2{font-size:15px;margin:0 0 16px;font-weight:600}
+.barrow{display:grid;grid-template-columns:150px 1fr 90px;align-items:center;gap:10px;margin-bottom:10px;font-size:13px}
+.barlabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.barlabel.click{cursor:pointer;color:var(--accent)}
+.barlabel.uclick{cursor:pointer;color:var(--user)}
+.bartrack{background:#eef2f8;border-radius:8px;height:22px;overflow:hidden}.barfill{height:100%;border-radius:8px}
 .barval{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
-.note{background:#fff7ec;border:1px solid #f2e1c4;border-radius:12px;padding:14px 16px;font-size:13px;color:#6b5426;margin-bottom:20px}
-.empty{background:var(--card);border:1px dashed #c7d3e6;border-radius:14px;padding:40px;text-align:center;color:var(--muted)}
-.empty h2{color:var(--ink);font-size:18px;margin:0 0 8px}
-.empty code{background:#eef2f8;padding:2px 6px;border-radius:5px;font-size:13px}
-.combined .kpi{border-color:#d8d1ee;background:#faf9fe}
-.foot{color:var(--muted);font-size:12px;text-align:center;margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}.num{text-align:right;font-variant-numeric:tabular-nums}
+td .lk{cursor:pointer;color:var(--accent)}td .lku{cursor:pointer;color:var(--user)}
+tr:hover td{background:#f7faff}
+.full{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:20px}
+.note{background:#eef4ec;border:1px solid #cfe0c7;border-radius:12px;padding:14px 16px;font-size:13px;color:#365c2b;margin-bottom:20px}
+.warn{background:#fdecea;border:1px solid #f5c2bd;color:#8a1c13}
+.amber{background:#fbf7ec;border-color:#e8dcae;color:#6b5b25}
+.mono{font-family:'Cascadia Code',Consolas,monospace;font-size:12px;color:var(--muted)}
+.empty{max-width:640px;margin:60px auto;background:var(--card);border:1px dashed #c7d3e6;border-radius:14px;padding:40px;text-align:center;color:var(--muted)}
+.empty h2{color:var(--ink);font-size:18px;margin:0 0 8px}.empty code{background:#eef2f8;padding:2px 6px;border-radius:5px;font-size:13px}
 .hide{display:none}
-</style></head><body><div class="wrap">
-<h1>Azure AI spend attribution</h1>
-<div class="sub">Per-principal token usage and list-price cost across two patterns, plus a combined total.</div>
-<div id="status" class="status blank">● Not configured</div>
+</style></head><body><div class="app">
+<div class="nav">
+ <div class="brand">AI Spend Attribution<small>FinOps portal</small></div>
+ <div class="navsec">Views</div>
+ <div class="navitem active" data-v="overview" onclick="setView('overview',this)"><span class="dot" style="background:var(--accent)"></span>Overview</div>
+ <div class="navitem" data-v="aoai" onclick="setView('aoai',this)"><span class="dot" style="background:var(--aoai)"></span>Azure OpenAI</div>
+ <div class="navitem" data-v="claude" onclick="setView('claude',this)"><span class="dot" style="background:var(--claude)"></span>Claude (gateway)</div>
+ <div class="navitem" data-v="byuser" onclick="setView('byuser',this)"><span class="dot" style="background:var(--user)"></span>By user</div>
+ <div class="src" id="srcnote"><b>Data source</b><br>Azure Log Analytics<br>Live query via query-helper.ps1.</div>
+</div>
+<div class="main">
+<h1>AI Spend Attribution</h1>
+<div class="sub">Per-principal token usage and list-price cost across two patterns, in one portal. Queried live from Azure Log Analytics.</div>
 
 <div id="empty" class="empty">
   <h2>Not configured</h2>
   <p>This portal is live-only and ships with no sample data.</p>
-  <p>Fill <code>config.sample.json</code> (save it as <code>config.json</code>), then run
-  <code>query-helper.ps1</code> to generate <code>data.json</code>. Reload this page.</p>
+  <p>Fill <code>config.sample.json</code> (save as <code>config.json</code>), run
+  <code>query-helper.ps1</code> to generate <code>data.json</code>, then reload.</p>
 </div>
 
 <div id="dash" class="hide">
-  <div class="note" id="qfail" style="background:#fdecea;border-color:#f5c2bd;color:#8a1c13;display:none"></div>
-  <div class="note" id="caveat"></div>
-
-  <!-- Combined total -->
-  <section class="combined">
-    <div class="sechead"><span class="dot" style="background:var(--combined)"></span><h2>Combined total</h2></div>
-    <div class="grid">
-      <div class="kpi"><div class="n" id="c-cost">—</div><div class="l" id="c-costlab">Est. cost (list-price)</div></div>
-      <div class="kpi"><div class="n" id="c-tokens">—</div><div class="l">Total tokens</div></div>
-      <div class="kpi"><div class="n" id="c-calls">—</div><div class="l">Attributed calls</div></div>
-      <div class="kpi"><div class="n" id="c-principals">—</div><div class="l">Distinct principals</div></div>
-    </div>
-  </section>
-
-  <!-- Azure OpenAI (no gateway) -->
-  <section>
-    <div class="sechead"><span class="dot" style="background:var(--aoai)"></span><h2>Azure OpenAI — no gateway</h2></div>
-    <div class="grid">
-      <div class="kpi"><div class="n" id="a-cost">—</div><div class="l" id="a-costlab">Est. cost (list-price)</div></div>
-      <div class="kpi"><div class="n" id="a-tokens">—</div><div class="l">Total tokens</div></div>
-      <div class="kpi"><div class="n" id="a-calls">—</div><div class="l">Attributed calls</div></div>
-      <div class="kpi"><div class="n" id="a-principals">—</div><div class="l">Distinct principals</div></div>
-    </div>
-    <div class="card"><h3>Estimated cost by model</h3><div id="a-bars"></div></div>
-    <div class="card"><h3>Per-principal &times; model</h3>
-      <table><thead><tr><th>Principal (oid)</th><th>Model</th><th>Deployment</th>
-        <th class="num">Calls</th><th class="num">Prompt</th><th class="num">Completion</th>
-        <th class="num">Cached</th><th class="num">Est. cost</th></tr></thead>
-        <tbody id="a-rows"></tbody></table></div>
-    <div class="card"><h3>Token meters by model</h3><div id="a-meters"></div>
-      <div class="mono" style="margin-top:10px">Input is billable (uncached) input = prompt &minus; cached. This platform-log path captures the cached (read) subset; cache-write (billed on GPT-5.6+ models) and per-user reasoning exist but are not on this path, so they show &ldquo;&mdash;&rdquo;. Reasoning tokens are inside completion and are not a separate charge.</div></div>
-  </section>
-
-  <!-- Claude (via gateway) -->
-  <section>
-    <div class="sechead"><span class="dot" style="background:var(--claude)"></span><h2>Claude — via gateway</h2></div>
-    <div class="grid">
-      <div class="kpi"><div class="n" id="g-cost">—</div><div class="l" id="g-costlab">Est. cost (list-price)</div></div>
-      <div class="kpi"><div class="n" id="g-tokens">—</div><div class="l">Prompt+completion tokens</div></div>
-      <div class="kpi"><div class="n" id="g-calls">—</div><div class="l">Attributed calls</div></div>
-      <div class="kpi"><div class="n" id="g-principals">—</div><div class="l">Distinct principals</div></div>
-    </div>
-    <div class="card"><h3>Estimated cost by model</h3><div id="g-bars"></div></div>
-    <div class="card"><h3>Per-principal &times; model</h3>
-      <table><thead><tr><th>Principal (oid)</th><th>Model</th>
-        <th class="num">Calls</th><th class="num">Prompt</th><th class="num">Completion</th>
-        <th class="num">Est. cost</th></tr></thead>
-        <tbody id="g-rows"></tbody></table>
-      <div class="mono" style="margin-top:10px">Per-user cache tokens are not captured at the gateway on streaming; cache reconciles at the resource total.</div></div>
-    <div class="card"><h3>Token meters by model</h3><div id="g-meters"></div>
-      <div class="mono" style="margin-top:10px">Claude input is already uncached; total input = input + cache-write + cache-read. Cache write (5m/1h tiers) and cache read populate only when the Claude source is the app-side / non-streaming capture. On the streaming gateway path they show <b>&mdash;</b> (meter exists but is not captured here) and cache reconciles at the resource total &mdash; this is expected, not a defect. Thinking is a subset of output, shown for transparency, never added to cost. &ldquo;&mdash;&rdquo; means the meter exists but was not captured on this query path.</div></div>
-  </section>
-
-  <div class="foot" id="foot"></div>
+<div class="note warn" id="qfail" style="display:none"></div>
+<div class="note amber">
+<b>How to read these numbers.</b> Token counts are <b>real/measured</b>. Department / app / user are
+<b>app-supplied enrichment</b> on each call's Entra <span class="mono">oid</span> (when the enrichment
+table is wired; otherwise principals show by oid). Dollars are a <b>list-price estimate</b> — reconcile
+to Azure Marketplace / Cost Management before chargeback. Cache-write is billed at a premium, cache-read
+at a discount; <b>thinking / reasoning tokens are already inside output</b> and are shown for
+transparency only, never added to cost. A blank meter (<span class="mono">—</span>) means the meter
+exists but was not captured on this query path; <span class="mono">n/a</span> means no such meter for
+that pattern.
 </div>
-
+<div class="bar">
+ <span class="live" id="livebadge">● LIVE from Azure</span>
+ <div class="seg" id="dateseg">
+  <button data-d="7" onclick="setDays(7,this)">7d</button>
+  <button data-d="14" onclick="setDays(14,this)">14d</button>
+  <button data-d="30" class="on" onclick="setDays(30,this)">30d</button>
+  <button data-d="0" onclick="setDays(0,this)">All</button>
+ </div>
+ <span id="chipwrap"></span>
+</div>
+<div id="content"></div>
+</div>
+</div></div>
 <script>
 /*
-  data.json contract (written by query-helper.ps1). Both row arrays may be empty; a
-  pattern you have not wired up simply contributes no rows and its section stays blank.
+  data.json contract (written by query-helper.ps1):
     {
-      "generatedAt":    "<ISO 8601 UTC>",
+      "generatedAt": "<ISO 8601 UTC>",
       "timeRangeHours": <number>,
-      "aoai":   { "queryOk": <bool>, "rows": [ { oid, model, deployment, calls, promptTokens,
-                             completionTokens, cachedInput, estCostUsd, costBasis } ] },
-      "claude": { "queryOk": <bool>, "rows": [ { oid, model, calls, promptTokens,
-                             completionTokens, estCostUsd, costBasis,
-                             // OPTIONAL full-meter fields - present only when the Claude source is the
-                             // app-side / non-streaming capture (08-sample-agent) rather than the
-                             // streaming gateway log. On the streaming gateway path these are absent.
-                             cacheWrite5m?, cacheWrite1h?, cacheRead?, thinking? } ] }
+      "source": "enrichment" | "platform-log",   // which query produced the records
+      "queryOk": <bool>,                          // false => a query FAILED (not merely empty)
+      "records": [ {
+        ts, oid, user, department, app, pipeline ("aoai"|"gateway"), model,
+        input, output,                            // integers (already-uncached input; output incl. thinking)
+        cacheWrite, cacheRead, thinking,          // integers OR null (null = meter not captured on this path)
+        cost,                                     // list-price estimate OR null (null = UNPRICED, never $0)
+        costBasis                                 // "full" | "p+c-only" | "unpriced"
+      } ]
     }
-  queryOk=false means the KQL query FAILED (not merely empty) - the portal shows a failure banner
-  instead of treating it as zero spend. estCostUsd is a list-price estimate (null when the model has
-  no rate row -> rendered as an em-dash, never a false $0). costBasis is "full", "p+c-only" (streaming
-  Claude: cache omitted), or "unpriced"; the cost KPI label reflects it.
-  estCostUsd is a list-price estimate the helper already computed from the rate card;
-  the portal never prices anything itself, it only sums and displays.
-  Token-meter semantics (see docs/01-how-it-works.md): AOAI promptTokens INCLUDES cachedInput
-  (billable input = prompt - cached); Claude promptTokens is already uncached. thinking/reasoning
-  tokens are a SUBSET of completion - shown for transparency, never added to cost.
+  The portal aggregates client-side so every filter recomputes instantly. It NEVER prices anything
+  itself — cost comes pre-computed from the shared metering module. thinking is display-only.
 */
+let DATA = [], META = {}, view='overview', days=30, dept=null, usr=null;
+const money=v=>(v==null?'<span class="mono">—</span>':'$'+(v<1?Number(v).toFixed(4):Number(v).toFixed(2)));
+const num=v=>(v==null?'<span class="mono">—</span>':Number(v).toLocaleString());
+const esc=s=>String(s).replace(/'/g,"\\'");
 
-// --- Display formatters. Everything nullable renders as an em-dash rather than "NaN". ---
-const fmt = n => (n==null?"—":Number(n).toLocaleString());   // integer-ish counts with thousands separators
-const usd = n => (n==null?"—":"$"+Number(n).toFixed(4));     // dollars to 4dp (costs are small per window)
-const COLORS = {aoai:"#5B8FF0", claude:"#6DBFA9"};            // soft Microsoft blue / green, one per pattern
-
-// True when neither pattern returned any rows -> the page keeps its "Not configured" state.
-function isEmpty(data){
-  if(!data) return true;
-  const a = data.aoai && data.aoai.rows && data.aoai.rows.length;
-  const g = data.claude && data.claude.rows && data.claude.rows.length;
-  return !a && !g;
+function base(){const cut=Date.now()-days*864e5;return DATA.filter(r=>(days===0||new Date(r.ts).getTime()>=cut)&&(!dept||r.department===dept)&&(!usr||r.user===usr));}
+function sumCost(rows){let s=0,anyUnpriced=false;rows.forEach(r=>{if(r.cost==null)anyUnpriced=true;else s+=r.cost;});return {sum:s,anyUnpriced};}
+function costNote(rows){const u=rows.filter(r=>r.cost==null).length;const pc=rows.some(r=>r.costBasis==='p+c-only');const p=[];if(pc)p.push('P+C only, excl. cache');if(u>0)p.push(u+' unpriced');return p.length?' · '+p.join(' · '):'';}
+function aggBy(rows,fn){const m={};rows.forEach(r=>{const k=fn(r);(m[k]=m[k]||{cost:0});if(r.cost!=null)m[k].cost+=r.cost;});return m;}
+function bars(obj,color,opt){opt=opt||{};const e=Object.entries(obj).sort((a,b)=>b[1].cost-a[1].cost);const mx=Math.max(...e.map(x=>x[1].cost),1e-9);
+ return e.map(([k,v])=>{let cl='class="barlabel"';if(opt.click)cl='class="barlabel click" onclick="setDept(\''+esc(k)+'\')"';if(opt.uclick)cl='class="barlabel uclick" onclick="setUser(\''+esc(k)+'\')"';
+ return '<div class="barrow"><div '+cl+'>'+k+'</div><div class="bartrack"><div class="barfill" style="width:'+(100*v.cost/mx)+'%;background:'+color+'"></div></div><div class="barval">'+money(v.cost)+'</div></div>';}).join('')|| '<div class="mono">No rows.</div>';}
+function kpis(rows){const c=sumCost(rows);const d=new Set(rows.map(r=>r.department)).size,a=new Set(rows.map(r=>r.app)).size,u=new Set(rows.map(r=>r.oid)).size;
+ return '<div class="grid"><div class="kpi"><div class="n">'+money(c.sum)+'</div><div class="l">Est. spend (list-price)'+costNote(rows)+'</div></div>'
+ +'<div class="kpi"><div class="n">'+d+'</div><div class="l">Departments</div></div>'
+ +'<div class="kpi"><div class="n">'+a+'</div><div class="l">Applications</div></div>'
+ +'<div class="kpi"><div class="n">'+u+'</div><div class="l">Users (human)</div></div></div>';}
+function dauTable(rows){const m={};rows.forEach(r=>{const k=r.department+'||'+r.app+'||'+r.user;(m[k]=m[k]||{calls:0,tokens:0,cost:0});m[k].calls++;m[k].tokens+=r.input+r.output;if(r.cost!=null)m[k].cost+=r.cost;});
+ const e=Object.entries(m).sort((a,b)=>b[1].cost-a[1].cost);
+ return '<div class="full"><h2 style="font-size:15px;margin:0 0 14px;font-weight:600">Spend by department, application and user</h2><table><thead><tr><th>Department</th><th>Application</th><th>User (human)</th><th class="num">Calls</th><th class="num">Tokens</th><th class="num">Est. cost</th></tr></thead><tbody>'
+ +e.map(([k,v])=>{const p=k.split('||');return '<tr><td><span class="lk" onclick="setDept(\''+esc(p[0])+'\')">'+p[0]+'</span></td><td>'+p[1]+'</td><td><span class="lku" onclick="setUser(\''+esc(p[2])+'\')">'+p[2]+'</span></td><td class="num">'+v.calls+'</td><td class="num">'+num(v.tokens)+'</td><td class="num">'+money(v.cost)+'</td></tr>';}).join('')
+ +'</tbody></table></div>';}
+// Per-model TOKEN METER table. kind = "aoai" | "claude" controls which meters are meaningful.
+// A cell shows "n/a" when the meter does not exist for the pattern, "—" when it exists but was not
+// captured on this record's path, and a number when captured. Thinking is display-only (never in cost).
+function meterTable(rows,kind){const m={};rows.forEach(r=>{const x=m[r.model]||(m[r.model]={calls:0,inp:0,out:0,cw:0,cr:0,think:0,cwSeen:false,crSeen:false,thSeen:false,cost:0,unpriced:false});
+ x.calls++;x.inp+=r.input;x.out+=r.output;
+ if(r.cost==null)x.unpriced=true;else x.cost+=r.cost;
+ if(r.cacheWrite!=null){x.cw+=r.cacheWrite;x.cwSeen=true;}
+ if(r.cacheRead!=null){x.cr+=r.cacheRead;x.crSeen=true;}
+ if(r.thinking!=null){x.think+=r.thinking;x.thSeen=true;}});
+ const na='<td class="num mono">n/a</td>';
+ const cell=(seen,val)=>seen?'<td class="num">'+num(val)+'</td>':'<td class="num mono">—</td>';
+ const cwCell=(x)=>kind==='aoai'?(x.cwSeen?'<td class="num">'+num(x.cw)+'</td>':'<td class="num mono">—</td>'):cell(x.cwSeen,x.cw);
+ const thCell=(x)=>kind==='aoai'?(x.thSeen?'<td class="num">'+num(x.think)+'</td>':'<td class="num mono">—</td>'):cell(x.thSeen,x.think);
+ const e=Object.entries(m).sort((a,b)=>b[1].cost-a[1].cost);
+ return '<div class="full"><h2 style="font-size:15px;margin:0 0 6px;font-weight:600">Token meters by model</h2><div style="font-size:12px;color:var(--muted);margin-bottom:12px">Every meter from the model\'s <span class="mono">usage</span> object. Cache-write is a premium, cache-read a discount. Thinking is a subset of output (already billed as output) — shown for transparency, never added to cost.</div><table><thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache&nbsp;write</th><th class="num">Cache&nbsp;read</th><th class="num">Thinking</th><th class="num">Est. cost</th></tr></thead><tbody>'
+ +e.map(([k,x])=>'<tr><td>'+k+'</td><td class="num">'+x.calls+'</td><td class="num">'+num(x.inp)+'</td><td class="num">'+num(x.out)+'</td>'+cwCell(x)+cell(x.crSeen,x.cr)+thCell(x)+'<td class="num">'+(x.unpriced?'<span class="mono">—</span>':money(x.cost))+'</td></tr>').join('')+'</tbody></table></div>';}
+function userCard(rows){return '<div class="card"><h2>Spend by user</h2>'+bars(aggBy(rows,r=>r.user),'#2AA98C',{uclick:true})+'</div>';}
+function pipeCard(rows){return '<div class="card"><h2>Spend by pipeline</h2>'+bars(aggBy(rows,r=>r.pipeline==='gateway'?'Claude (gateway)':'Azure OpenAI'),'#8A6FC7')+'<div style="margin-top:12px;font-size:12px;color:var(--muted)">Azure OpenAI (no gateway) vs Claude (via APIM gateway).</div></div>';}
+function modelCard(rows,color){return '<div class="card"><h2>Spend by model</h2>'+bars(aggBy(rows,r=>r.model),color)+'</div>';}
+function block(rows,color,secondCard){return kpis(rows)+'<div class="cards"><div class="card"><h2>Spend by department</h2>'+bars(aggBy(rows,r=>r.department),color,{click:true})+'<div style="margin-top:12px;font-size:12px;color:var(--muted)">Click a department or user anywhere to drill in.</div></div>'+secondCard+'</div><div class="cards">'+userCard(rows)+pipeCard(rows)+'</div>'+dauTable(rows);}
+function userView(rows){const m={};rows.forEach(r=>{(m[r.user]=m[r.user]||{depts:new Set(),apps:new Set(),calls:0,tokens:0,cost:0});m[r.user].depts.add(r.department);m[r.user].apps.add(r.app);m[r.user].calls++;m[r.user].tokens+=r.input+r.output;if(r.cost!=null)m[r.user].cost+=r.cost;});
+ const e=Object.entries(m).sort((a,b)=>b[1].cost-a[1].cost);
+ return kpis(rows)+'<div class="cards">'+userCard(rows)+'<div class="card"><h2>Spend by department</h2>'+bars(aggBy(rows,r=>r.department),'#3B6FD4',{click:true})+'</div></div>'
+ +'<div class="full"><h2 style="font-size:15px;margin:0 0 14px;font-weight:600">Cost by user</h2><table><thead><tr><th>User (human)</th><th>Departments</th><th class="num">Apps</th><th class="num">Calls</th><th class="num">Tokens</th><th class="num">Est. cost</th></tr></thead><tbody>'
+ +e.map(([k,v])=>'<tr><td><span class="lku" onclick="setUser(\''+esc(k)+'\')">'+k+'</span></td><td>'+[...v.depts].join(', ')+'</td><td class="num">'+v.apps.size+'</td><td class="num">'+v.calls+'</td><td class="num">'+num(v.tokens)+'</td><td class="num">'+money(v.cost)+'</td></tr>').join('')+'</tbody></table>'
+ +'<div style="margin-top:10px;font-size:12px;color:var(--muted)">Each user is a distinct oid on the record. Where one identity made the calls (or enrichment is not wired), users are labels on distinct oids; production resolves each user from their own Entra token.</div></div>';}
+function render(){
+ const rows=base();
+ let chips='';if(dept)chips+='<span class="chip">Dept: '+dept+' <span onclick="setDept(null)">&times;</span></span> ';if(usr)chips+='<span class="chip u">User: '+usr+' <span onclick="setUser(null)">&times;</span></span>';
+ document.getElementById('chipwrap').innerHTML=chips;
+ let html='';
+ if(view==='overview') html=block(rows,'#3B6FD4',modelCard(rows,'#8A6FC7'))+meterTable(rows,'claude');
+ else if(view==='aoai'){const a=rows.filter(r=>r.pipeline==='aoai');html='<div class="note"><b>Azure OpenAI — no gateway.</b> Token counts come from the diagnostic log / response usage; department/app/user are enrichment. Cached input is billed at a discount; cache-write is billed only on GPT-5.6+, and per-user reasoning is not on the platform-log path (both show &ldquo;&mdash;&rdquo;). Queried from Azure.</div>'+block(a,'#5B8FF0',modelCard(a,'#5B8FF0'))+meterTable(a,'aoai');}
+ else if(view==='claude'){const c=rows.filter(r=>r.pipeline==='gateway');html='<div class="note"><b>Claude — via APIM gateway.</b> The full <span class="mono">usage</span> object (input, output, cache-write 5m/1h, cache-read, thinking) is captured app-side / non-streaming; on the streaming gateway path per-user cache shows &ldquo;&mdash;&rdquo; and reconciles at the resource total. Queried from Azure.</div>'+(c.length?block(c,'#8A6FC7',modelCard(c,'#8A6FC7'))+meterTable(c,'claude'):'<div class="full"><div class="mono">No Claude-gateway records in range. Wire the gateway LLM log (docs/03) or the enrichment table to populate this view.</div></div>');}
+ else if(view==='byuser') html=userView(rows);
+ document.getElementById('content').innerHTML=html;
 }
+function setView(v,el){view=v;document.querySelectorAll('.navitem').forEach(n=>n.classList.remove('active'));if(el)el.classList.add('active');render();}
+function setDays(d,el){days=d;document.querySelectorAll('#dateseg button').forEach(b=>b.classList.remove('on'));if(el)el.classList.add('on');render();}
+function setDept(d){dept=d;render();}
+function setUser(u){usr=u;render();}
 
-// Count of distinct principals (Entra object ids) across a row set -> the KPI card value.
-function distinct(rows){ return new Set(rows.map(r=>r.oid)).size; }
-// Sum one numeric field across rows, coercing safely (missing/undefined -> 0).
-function sum(rows, k){ return rows.reduce((s,r)=>s+(Number(r[k])||0),0); }
-
-// A short qualifier appended to a cost KPI label so a headline dollar never hides that it is
-// incomplete: "P+C only" when cache/thinking were not captured (streaming Claude), and a count
-// of unpriced rows (model missing from the rate card, contributes $0 to the sum).
-function costNote(rows){
-  const unpriced = rows.filter(r=>r.estCostUsd==null).length;
-  const pcOnly = rows.some(r=>r.costBasis==="p+c-only");
-  const parts = [];
-  if(pcOnly) parts.push("P+C only, excl. cache");
-  if(unpriced>0) parts.push(unpriced+" unpriced");
-  return parts.length ? " · "+parts.join(" · ") : "";
+function boot(d){
+  META=d||{};
+  const recs=(d&&d.records)||[];
+  // failed query => show the dash but with a loud banner (a failure is never zero spend)
+  const failed = d && d.queryOk===false;
+  if(!recs.length && !failed){ return; } // stay on "Not configured"
+  document.getElementById('empty').classList.add('hide');
+  document.getElementById('dash').classList.remove('hide');
+  DATA = recs.map(r=>({
+    ts:r.ts, oid:r.oid, user:r.user||('('+String(r.oid||'').slice(0,8)+')'),
+    department:r.department||'(unattributed)', app:r.app||r.model, pipeline:(r.pipeline==='gateway'?'gateway':'aoai'),
+    model:r.model, input:Number(r.input)||0, output:Number(r.output)||0,
+    cacheWrite:(r.cacheWrite==null?null:Number(r.cacheWrite)), cacheRead:(r.cacheRead==null?null:Number(r.cacheRead)),
+    thinking:(r.thinking==null?null:Number(r.thinking)), cost:(r.cost==null?null:Number(r.cost)), costBasis:r.costBasis||'full'
+  }));
+  const qf=document.getElementById('qfail');
+  if(failed){qf.style.display='block';qf.innerHTML='<b>A query FAILED.</b> These numbers are INCOMPLETE — a failed query returns no rows, which is not the same as zero spend. Check workspace access, the table name, and query-helper.ps1 output before trusting any total.';}
+  const gen = d.generatedAt? new Date(d.generatedAt).toLocaleString() : '';
+  document.getElementById('livebadge').textContent = '● LIVE from Azure'+(gen?' — '+gen:'');
+  const srcLabel = d.source==='enrichment' ? 'custom table <span class="mono">AiSpendEnrichment_CL</span> (enrichment: dept/app/user + all meters)' : 'platform diagnostic log (per-principal; no dept/app/user enrichment)';
+  document.getElementById('srcnote').innerHTML='<b>Data source</b><br>Azure Log Analytics<br>'+srcLabel+'<br>Window: '+(d.timeRangeHours?Math.round(d.timeRangeHours/24)+'d':'—')+'.';
+  render();
 }
-
-// Render a horizontal "estimated cost by model" bar chart into `el`.
-// Rows are grouped by model, summed, and scaled to the largest bar so the widest
-// model fills the track. The tiny max floor (0.0000001) avoids divide-by-zero when
-// every cost is 0 (e.g. a rate card that has not been filled in yet).
-function bars(el, rows, color){
-  const byModel = {};
-  rows.forEach(r=>{ byModel[r.model] = (byModel[r.model]||0) + (Number(r.estCostUsd)||0); });
-  const entries = Object.entries(byModel);
-  const max = Math.max(...entries.map(e=>e[1]), 0.0000001);
-  el.innerHTML = entries.map(([m,v])=>
-    `<div class="barrow"><div>${m}</div>
-     <div class="bartrack"><div class="barfill" style="width:${(100*v/max).toFixed(1)}%;background:${color}"></div></div>
-     <div class="barval">${usd(v)}</div></div>`).join("") || '<div class="mono">No rows.</div>';
-}
-
-// Render a per-model TOKEN METER table. `kind` is "aoai" or "claude" and controls which
-// meter columns are meaningful. Cells render "—" for a meter the pattern does not carry, so
-// the table never implies a captured 0 where the value is simply unavailable (e.g. per-user
-// Claude cache on streaming). Thinking/reasoning is shown for transparency; it is a subset of
-// output and is NOT added to cost anywhere.
-function meterTable(rows, kind){
-  const m = {};
-  rows.forEach(r=>{
-    const x = m[r.model] || (m[r.model] = {calls:0,inp:0,out:0,cw:0,cr:0,think:0,cwSeen:false,crSeen:false,thSeen:false,cost:0,unpriced:false});
-    const prompt = Number(r.promptTokens)||0, comp = Number(r.completionTokens)||0;
-    const cached = Number(r.cachedInput)||0;
-    x.calls += Number(r.calls)||0;
-    x.inp   += (kind==="aoai") ? Math.max(prompt-cached,0) : prompt;   // AOAI: subtract cached; Claude: already uncached
-    x.out   += comp;
-    if(r.estCostUsd==null) x.unpriced = true; else x.cost += Number(r.estCostUsd)||0;
-    if(kind==="aoai"){ x.cr += cached; x.crSeen = true; }              // AOAI cached (read) subset; cache-write (GPT-5.6+) not on this path
-    else {
-      if(r.cacheWrite5m!=null||r.cacheWrite1h!=null){ x.cw += (Number(r.cacheWrite5m)||0)+(Number(r.cacheWrite1h)||0); x.cwSeen=true; }
-      if(r.cacheRead!=null){ x.cr += Number(r.cacheRead)||0; x.crSeen=true; }
-      if(r.thinking!=null){ x.think += Number(r.thinking)||0; x.thSeen=true; }
-    }
-  });
-  const dashCell = `<td class="num mono">—</td>`;      // meter exists but was not captured on this query path
-  const mcell = (which, seen, val) => {
-    if(kind==="aoai"){
-      // The platform-log portal path captures the cached (read) subset only. Cache-write (billed on
-      // GPT-5.6+) and per-user reasoning exist but are not on this path -> "—", not a captured zero.
-      if(which==="cw" || which==="think") return dashCell;
-      return `<td class="num">${fmt(val)}</td>`;       // cache-read = the automatic cached subset
-    }
-    return seen ? `<td class="num">${fmt(val)}</td>` : dashCell;  // Claude: — until app-side capture is wired
-  };
-  const body = Object.entries(m).map(([model,x])=>
-    `<tr><td><span class="pill" style="background:${COLORS[kind]}22;color:#33415a">${model}</span></td>
-     <td class="num">${fmt(x.calls)}</td><td class="num">${fmt(x.inp)}</td><td class="num">${fmt(x.out)}</td>
-     ${mcell("cw",x.cwSeen,x.cw)}${mcell("cr",x.crSeen,x.cr)}${mcell("think",x.thSeen,x.think)}
-     <td class="num">${x.unpriced ? '<span class="mono">—</span>' : usd(x.cost)}</td></tr>`).join("");
-  return `<table><thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Input</th>
-     <th class="num">Output</th><th class="num">Cache write</th><th class="num">Cache read</th>
-     <th class="num">Thinking</th><th class="num">Est. cost</th></tr></thead><tbody>${body}</tbody></table>`;
-}
-
-// Fill every KPI, chart, and table from the data object. Called only when data is non-empty.
-// oids are truncated to 13 chars in the UI; the portal shows the raw id here, so in a governed
-// deployment pseudonymize upstream (in query-helper / the workspace) rather than in the browser.
-function render(data){
-  document.getElementById("empty").classList.add("hide");
-  document.getElementById("dash").classList.remove("hide");
-  const st = document.getElementById("status");
-  st.className = "status live"; st.textContent = "● Live";
-
-  const aRows = (data.aoai && data.aoai.rows) || [];
-  const gRows = (data.claude && data.claude.rows) || [];
-
-  // Distinguish a FAILED query from an empty result: a failure must never read as zero spend.
-  const failed = [];
-  if(data.aoai   && data.aoai.queryOk   === false) failed.push("Azure OpenAI (Pattern A)");
-  if(data.claude && data.claude.queryOk === false) failed.push("Claude gateway (Pattern B)");
-  const qf = document.getElementById("qfail");
-  if(failed.length){
-    qf.style.display = "block";
-    qf.innerHTML = "<b>Query failed for: "+failed.join(", ")+".</b> These numbers are INCOMPLETE — a "+
-      "failed query returns no rows, which is not the same as zero spend. Check workspace access, the "+
-      "table name, and query-helper.ps1 output before trusting any total.";
-  } else { qf.style.display = "none"; }
-
-  // --- Azure OpenAI (no gateway): tokens = prompt + completion; cost is pre-priced. ---
-  const aTokens = sum(aRows,"promptTokens")+sum(aRows,"completionTokens");
-  const aCost = sum(aRows,"estCostUsd"), aCalls = sum(aRows,"calls");
-  document.getElementById("a-cost").textContent = usd(aCost);
-  document.getElementById("a-costlab").textContent = "Est. cost (list-price)"+costNote(aRows);
-  document.getElementById("a-tokens").textContent = fmt(aTokens);
-  document.getElementById("a-calls").textContent = fmt(aCalls);
-  document.getElementById("a-principals").textContent = fmt(distinct(aRows));
-  bars(document.getElementById("a-bars"), aRows, COLORS.aoai);
-  document.getElementById("a-rows").innerHTML = aRows.map(r=>
-    `<tr><td class="mono">${(r.oid||"").slice(0,13)}…</td>
-     <td><span class="pill" style="background:${COLORS.aoai}22;color:#33415a">${r.model||""}</span></td>
-     <td class="mono">${r.deployment||""}</td>
-     <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
-     <td class="num">${fmt(r.completionTokens)}</td><td class="num">${fmt(r.cachedInput)}</td>
-     <td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
-  document.getElementById("a-meters").innerHTML = meterTable(aRows, "aoai");
-
-  // --- Claude (via gateway): prompt + completion only; per-user cache is not captured. ---
-  const gTokens = sum(gRows,"promptTokens")+sum(gRows,"completionTokens");
-  const gCost = sum(gRows,"estCostUsd"), gCalls = sum(gRows,"calls");
-  document.getElementById("g-cost").textContent = usd(gCost);
-  document.getElementById("g-costlab").textContent = "Est. cost (list-price)"+costNote(gRows);
-  document.getElementById("g-tokens").textContent = fmt(gTokens);
-  document.getElementById("g-calls").textContent = fmt(gCalls);
-  document.getElementById("g-principals").textContent = fmt(distinct(gRows));
-  bars(document.getElementById("g-bars"), gRows, COLORS.claude);
-  document.getElementById("g-rows").innerHTML = gRows.map(r=>
-    `<tr><td class="mono">${(r.oid||"").slice(0,13)}…</td>
-     <td><span class="pill" style="background:${COLORS.claude}22;color:#33415a">${r.model||""}</span></td>
-     <td class="num">${fmt(r.calls)}</td><td class="num">${fmt(r.promptTokens)}</td>
-     <td class="num">${fmt(r.completionTokens)}</td><td class="num">${usd(r.estCostUsd)}</td></tr>`).join("");
-  document.getElementById("g-meters").innerHTML = meterTable(gRows, "claude");
-
-  // --- Combined total: costs and tokens simply add; principals are a UNION (the same
-  //     person calling both patterns must count once, so we dedupe oids across both sets). ---
-  const allOids = new Set([...aRows.map(r=>r.oid), ...gRows.map(r=>r.oid)]);
-  document.getElementById("c-cost").textContent = usd(aCost+gCost);
-  document.getElementById("c-costlab").textContent = "Est. cost (list-price)"+costNote([...aRows,...gRows]);
-  document.getElementById("c-tokens").textContent = fmt(aTokens+gTokens);
-  document.getElementById("c-calls").textContent = fmt(aCalls+gCalls);
-  document.getElementById("c-principals").textContent = fmt(allOids.size);
-
-  document.getElementById("caveat").innerHTML =
-    "<b>How to read these numbers.</b> Token counts are real/measured. Dollars are a <b>list-price estimate</b> "+
-    "reconciled to Azure Marketplace / Cost Management, not the invoice. Azure OpenAI figures are per "+
-    "authenticated caller (a shared identity collapses to one principal); billable input = prompt &minus; cached. "+
-    "Claude figures are prompt+completion per user (input is already uncached); <b>cache-write is billed at a "+
-    "premium and cache-read at a discount</b>, and per-user cache is not captured at the gateway on streaming "+
-    "(reconcile at the resource total). <b>Thinking / reasoning tokens are already inside output</b> and are shown "+
-    "for transparency only, never added to cost. App-side enrichment (department / app / cost center) is "+
-    "app-reported - reconcile row totals to independent control totals and report coverage, not a closed invoice.";
-
-  const gen = data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "";
-  const hrs = data.timeRangeHours ? `${data.timeRangeHours}h window` : "";
-  document.getElementById("foot").textContent =
-    `AI Spend Attribution | Illustrative rates | ${hrs}${gen?` | generated ${gen}`:""}`;
-}
-
-// Load the live data and render. Missing file, non-OK response, empty payload, or a
-// file:// fetch block all fall through to the pre-rendered "Not configured" state. A query
-// that ran but FAILED (queryOk=false) is rendered (not treated as "Not configured") so the
-// failure banner shows instead of a misleading blank.
-function queryFailed(d){ return !!(d && ((d.aoai&&d.aoai.queryOk===false)||(d.claude&&d.claude.queryOk===false))); }
-fetch("data.json", {cache:"no-store"})            // no-store so a re-run is picked up on reload
-  .then(r => r.ok ? r.json() : null)              // 404 (never generated) -> null -> stays blank
-  .then(d => { if(isEmpty(d) && !queryFailed(d)) return; render(d); })
-  .catch(()=>{ /* file:// fetch blocked, or bad JSON: leave the Not configured state */ });
+// Load live data; a missing file / non-OK / file:// block falls through to "Not configured".
+fetch('data.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{ if(d) boot(d); }).catch(()=>{});
 </script>
-</div></body></html>
+</body></html>
